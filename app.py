@@ -72,7 +72,10 @@ def gemini_client():
     return genai.Client(api_key=get_api_key())
 
 def gemini_text(system: str, user: Any, json_mode: bool=False, fast: bool=False) -> str:
-    config=types.GenerateContentConfig(system_instruction=system)
+    # thinking_level bajo deja más presupuesto de salida para el JSON en sí y evita
+    # que el modelo se quede sin tokens (MAX_TOKENS) antes de escribir la respuesta.
+    config=types.GenerateContentConfig(system_instruction=system,max_output_tokens=32768,
+        thinking_config=types.ThinkingConfig(thinking_level="LOW"))
     if json_mode: config.response_mime_type="application/json"
     client=gemini_client()
     last_error=None
@@ -80,7 +83,13 @@ def gemini_text(system: str, user: Any, json_mode: bool=False, fast: bool=False)
     for model in models:
         try:
             response=client.models.generate_content(model=model,contents=user,config=config)
-            return response.text
+            candidates=response.candidates or []
+            finish=str(candidates[0].finish_reason) if candidates else "SIN_CANDIDATOS"
+            text=response.text if candidates and candidates[0].content and candidates[0].content.parts else None
+            if not text:
+                raise RuntimeError(f"El modelo {model} no devolvió contenido utilizable (motivo: {finish}). "
+                    "Puede deberse a un expediente demasiado extenso o a un bloqueo de seguridad.")
+            return text
         except Exception as e:
             last_error=e
     raise last_error
