@@ -69,7 +69,8 @@ def gemini_client():
 def gemini_text(system: str, user: Any, json_mode: bool=False) -> str:
     config=types.GenerateContentConfig(system_instruction=system)
     if json_mode: config.response_mime_type="application/json"
-    response=gemini_client().models.generate_content(
+    client=gemini_client()
+    response=client.models.generate_content(
         model=os.getenv("GEMINI_MODEL","gemini-2.5-flash"),
         contents=user,
         config=config,
