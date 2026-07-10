@@ -35,9 +35,6 @@ FUENTES_REQUERIDAS = [
     "CRITERIOS DE EVALUACION DE CUMPLIMIENTO.xlsx",
     "PAUTAS PAS.xlsx",
 ]
-CASO_0008152_VALIDADO = """La Resolución TRASU N.° 0015285-2026-TRASU/OSIPTEL fue notificada el 20/05/2026, otorgando a la empresa operadora el plazo de diez (10) días hábiles para aplicar el descuento del 50 % sobre el cargo fijo del plan tarifario del servicio N.° 92005XXXX durante el periodo de seis meses, plazo que vencía el 03/06/2026. Al respecto, mediante las cartas N.os RMA-FC384918-2026-AC-1 y RMA-FC384918-2026-AC-2, la empresa operadora señaló que efectuó ajustes por un importe total de S/ 100,30, correspondientes a los recibos de febrero, marzo y mayo de 2026, y que había gestionado la aplicación de ajustes recurrentes de S/ 29,95 para los meses de junio, julio y agosto de 2026. Ahora bien, de la revisión de las notas de crédito y del histórico del estado de cuenta, se verifica que los ajustes correspondientes a febrero, marzo y mayo de 2026 fueron ejecutados dentro del plazo establecido. Sin embargo, respecto de los tres meses restantes, la documentación remitida únicamente acredita la apertura de un caso de ajuste recurrente que se encontraba en curso y una comunicación interna de fecha 04/06/2026 en la que se indicaba que la atención se iniciaría una vez emitido el recibo de junio, sin que obre constancia de registro o activación efectiva de los descuentos correspondientes a junio, julio y agosto de 2026. En consecuencia, considerando que la empresa operadora únicamente acreditó la aplicación del beneficio respecto de tres de los seis meses ordenados, no acreditó la ejecución íntegra de la resolución, con lo cual se habría configurado la infracción.
-
-Asimismo, si bien la materia analizada no implica una restricción del servicio, no corresponde aplicar el eximente de subsanación voluntaria, toda vez que no se ha acreditado el cese total de la conducta ni la reversión integral de sus efectos, al encontrarse pendientes de ejecución tres de los seis meses del beneficio ordenado."""
 COLUMNAS = ["Expediente", "Empresa operadora", "Usuario o abonado", "Servicio",
     "Tipo de acto", "Número de resolución o carta", "Fecha de notificación o emisión",
     "Fecha máxima de vencimiento", "Obligación principal", "Resultado",
@@ -72,7 +69,7 @@ def gemini_client():
     return genai.Client(api_key=get_api_key())
 
 def gemini_text(system: str, user: Any, json_mode: bool=False, fast: bool=False) -> str:
-    config=types.GenerateContentConfig(system_instruction=system)
+    config=types.GenerateContentConfig(system_instruction=system,max_output_tokens=32768)
     if json_mode: config.response_mime_type="application/json"
     client=gemini_client()
     last_error=None
@@ -80,7 +77,11 @@ def gemini_text(system: str, user: Any, json_mode: bool=False, fast: bool=False)
     for model in models:
         try:
             response=client.models.generate_content(model=model,contents=user,config=config)
-            return response.text
+            candidates=response.candidates or []
+            finish=str(candidates[0].finish_reason) if candidates else "SIN_CANDIDATOS"
+            text=response.text if candidates and candidates[0].content and candidates[0].content.parts else None
+            if not text: raise RuntimeError(f"El modelo {model} no devolvió contenido utilizable (motivo: {finish}).")
+            return text
         except Exception as e:
             last_error=e
     raise last_error
@@ -287,12 +288,47 @@ def calculate_due(notification: str, context: str) -> tuple[str,str] | None:
     except Exception as e:
         raise ValueError(f"error del contador de plazos: {e}") from e
 
+def deterministic_paragraph(result: dict[str,Any], extraction: dict[str,Any]) -> str:
+    """Last-resort grounded drafting; never leaves a completed case blank."""
+    f=result.get("ficha") if isinstance(result.get("ficha"),dict) else {}
+    numero=f.get("numero_acto") or "no identificado"
+    acto=f.get("tipo_acto") or "acto evaluado"
+    notif=f.get("fecha_notificacion_emision") or "no identificada"
+    plazo=f.get("plazo_cumplimiento") or "no identificado"
+    vence=f.get("fecha_vencimiento") or "no identificada"
+    obligacion=f.get("obligacion_principal") or "la obligación ordenada"
+    pruebas=[]
+    for item in (extraction.get("medios_probatorios") or []):
+        if not isinstance(item,dict): continue
+        doc=item.get("documento") or "documento aportado"
+        fecha=f" de fecha {item.get('fecha')}" if item.get("fecha") else ""
+        hecho=item.get("hecho_acreditado") or "sin hecho acreditado identificado"
+        estado=item.get("estado") or "no acreditado"
+        pruebas.append(f"{doc}{fecha}: {hecho} (estado: {estado})")
+    matrices=[]
+    for item in (extraction.get("matriz_cumplimiento") or []):
+        if isinstance(item,dict):
+            matrices.append(f"{item.get('componente') or 'obligación'}: {item.get('estado') or 'no acreditado'}; {item.get('sustento') or 'sin sustento adicional'}")
+    contraste="; ".join(pruebas) if pruebas else "no se identificaron medios probatorios objetivos suficientes"
+    matriz="; ".join(matrices) if matrices else "no se acreditó documentalmente la ejecución de cada componente"
+    resultado=result.get("resultado") or "Pendiente"
+    subs=result.get("subsanacion_voluntaria") or "no corresponde"
+    clas=result.get("clasificacion") or "Pendiente"
+    return (f"El {acto} N.° {numero} fue notificado el {notif}, con un plazo de {plazo}, que vencía el {vence}. "
+            f"La obligación principal consistía en {obligacion}. Al respecto, la documentación examinada acredita lo siguiente: {contraste}. "
+            f"Del contraste individual de las obligaciones se obtiene: {matriz}. En consecuencia, el resultado de la evaluación es {resultado} y la clasificación es {clas}. "
+            f"Respecto de la subsanación voluntaria, {subs}, conforme al cese y reversión efectivamente acreditados en el expediente.")
+
 def ai_evaluate(payload: dict[str,Any]) -> dict[str,Any]:
     template="PLANTILLAS cumplimiento.docx" if payload["tipo_acto"]=="Resolución TRASU" else "PLANTILLAS DENUNCIAS ACTUALIZADAS.docx"
     case_context=json.dumps(payload,ensure_ascii=False)
     sources=legal_sources(case_context,template)
     extraction_schema={"acto":{"numero":"","fecha":"","mandato_textual":""},"obligaciones":[{"componente":"","periodo":"","plazo_expreso":"","prueba_exigible":""}],"medios_probatorios":[{"documento":"","fecha":"","hecho_acreditado":"","cita":"","estado":"ejecutado|programado|en_curso|no_acreditado"}],"matriz_cumplimiento":[{"componente":"","estado":"acreditado|parcial|no_acreditado","sustento":""}],"datos_no_identificados":[]}
-    extraction_system="""Actúa como extractor jurídico OSIPTEL. Separa hechos de conclusiones. Identifica todas las obligaciones, periodos, montos y condiciones del mandato. Para cada prueba distingue ejecución efectiva de solicitud, programación, caso abierto o gestión en curso. Una afirmación de la empresa no prueba por sí sola el hecho. Cita el documento que respalda cada dato. No evalúes todavía PAS ni subsanación. Devuelve JSON conforme al esquema."""
+    extraction_system="""Actúa como extractor jurídico OSIPTEL. Separa hechos de conclusiones. Identifica todas las obligaciones, periodos, montos y condiciones del mandato. Para cada prueba distingue ejecución efectiva de solicitud, programación, caso abierto o gestión en curso. Una afirmación de la empresa no prueba por sí sola el hecho. Cita el documento que respalda cada dato.
+
+REGLA OBLIGATORIA para obligaciones de informar, brindar, remitir, entregar o trasladar información al usuario: una carta o correo simple no acredita por sí solo que el usuario recibió la información. Exige acuse, confirmación de recepción o entrega, cargo de notificación con fecha o equivalente. Si solo existe envío sin recepción acreditada, marca el componente como no_acreditado.
+
+No evalúes todavía PAS ni subsanación. Devuelve JSON conforme al esquema."""
     extraction=json.loads(gemini_text(extraction_system,json.dumps({"esquema":extraction_schema,"caso":payload},ensure_ascii=False),json_mode=True)) or {}
     if not isinstance(extraction,dict): raise ValueError("Gemini no devolvió una extracción jurídica válida")
     schema={"ficha":{"expediente":"","empresa_operadora":"","usuario_abonado":"","servicio":"","tipo_acto":"","numero_acto":"","fecha_notificacion_emision":"","plazo_cumplimiento":"","fecha_vencimiento":"","obligacion_principal":"","medios_probatorios":[]},"trazabilidad":[],"evaluacion_juridica":{"checklist":[],"sustento_breve":"","tipo_incumplimiento":""},"resultado":"Cumplió|Incumplió|Inejecutable","subsanacion_voluntaria":"aplica|no aplica|no corresponde","clasificacion":"PAS|NO PAS","parrafo_final":"","datos_pendientes":[]}
@@ -354,17 +390,24 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
         rewritten=json.loads(gemini_text(rewrite_system,json.dumps(locked,ensure_ascii=False),json_mode=True)) or {}
         if not isinstance(rewritten,dict): rewritten={}
         result["parrafo_final"]=rewritten.get("parrafo_final",result.get("parrafo_final",""))
+    # A response without a paragraph is never a completed evaluation.
+    if not str(result.get("parrafo_final","")).strip():
+        locked={"ficha":result.get("ficha",{}),"extraccion_probatoria":extraction,
+                "resultado":result.get("resultado"),"subsanacion_voluntaria":result.get("subsanacion_voluntaria"),
+                "clasificacion":result.get("clasificacion"),"fuentes_aplicables":sources}
+        fallback_system="""Redacta el párrafo jurídico final conforme a la plantilla aplicable. Relaciona en orden: acto y notificación; plazo y vencimiento de la ficha; mandato; alegaciones; pruebas objetivas; contraste por cada obligación o periodo; conclusión; y subsanación. No cambies el resultado, la clasificación ni la subsanación ya determinadas. No inventes. Devuelve JSON {parrafo_final:string}."""
+        try:
+            fallback=json.loads(gemini_text(fallback_system,json.dumps(locked,ensure_ascii=False),json_mode=True)) or {}
+            if isinstance(fallback,dict): result["parrafo_final"]=str(fallback.get("parrafo_final","")).strip()
+        except Exception:
+            result["parrafo_final"]=""
+    if not str(result.get("parrafo_final","")).strip():
+        result["parrafo_final"]=deterministic_paragraph(result,extraction)
     # Avoid an accidental exact duplication of the generated paragraph.
     paragraph=str(result.get("parrafo_final","")).strip()
     half=len(paragraph)//2
     if len(paragraph)%2==0 and paragraph[:half]==paragraph[half:]:
         result["parrafo_final"]=paragraph[:half].strip()
-    # This exact expediente has a professionally reviewed and user-approved analysis.
-    # It is never reused for another expediente.
-    expediente_normalizado=re.sub(r"[^A-Z0-9]","",str(payload.get("expediente_detectado","")).upper())
-    if expediente_normalizado=="00081522026TRASUSTRA":
-        result["resultado"]="Incumplió"; result["subsanacion_voluntaria"]="no aplica"; result["clasificacion"]="PAS"
-        result["parrafo_final"]=CASO_0008152_VALIDADO
     return result
 
 def regenerate_paragraph(result: dict[str,Any]) -> str:
@@ -392,7 +435,7 @@ with left:
     st.markdown('<div class="light">Expediente particular</div>',unsafe_allow_html=True)
     uploads=st.file_uploader("Cargar expediente",accept_multiple_files=True,type=["pdf","docx","xlsx","xls","csv","txt","png","jpg","jpeg","tif","tiff","zip","rar","7z"])
     if uploads:
-        signature="|".join(f"{u.name}:{u.size}" for u in uploads)
+        signature="|".join(f"{u.name}:{hashlib.sha256(u.getvalue()).hexdigest()}" for u in uploads)
         if signature!=st.session_state.upload_signature:
             st.session_state.result=None; st.session_state.analysis_error=None
             st.session_state.analysis_status="Archivos nuevos listos para analizar"
