@@ -71,7 +71,7 @@ def gemini_text(system: str, user: Any, json_mode: bool=False) -> str:
     if json_mode: config.response_mime_type="application/json"
     client=gemini_client()
     response=client.models.generate_content(
-        model=os.getenv("GEMINI_MODEL","gemini-2.5-flash"),
+        model="gemini-3.5-flash",
         contents=user,
         config=config,
     )
