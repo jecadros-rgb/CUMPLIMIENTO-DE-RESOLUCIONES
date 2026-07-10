@@ -134,6 +134,21 @@ def exact_notification(expediente: str) -> str | None:
             if not hit.empty and pd.notna(hit.iloc[0]): return str(hit.iloc[0]).strip()
     return None
 
+def identify_exact_expediente(context: str) -> str | None:
+    """Resolve filename-safe variants to one exact value stored in NRO_EXPEDIENTE."""
+    normalized_context=re.sub(r"[^A-Z0-9]","",context.upper())
+    candidates=[]
+    path=FUENTES/"notificaciones mayo.xlsx"
+    for _,df in pd.read_excel(path,sheet_name=None,dtype=str).items():
+        cols={str(c).strip().upper():c for c in df.columns}
+        if "NRO_EXPEDIENTE" not in cols: continue
+        for value in df[cols["NRO_EXPEDIENTE"]].dropna().astype(str).str.strip().unique():
+            normalized=re.sub(r"[^A-Z0-9]","",value.upper())
+            if len(normalized)>=10 and normalized in normalized_context:
+                candidates.append(value)
+    unique=list(dict.fromkeys(candidates))
+    return unique[0] if len(unique)==1 else None
+
 def source_text(name: str, limit=50000) -> str:
     return read_file(FUENTES/name)[:limit]
 
@@ -210,8 +225,8 @@ if analyze:
                 texts={p.name:read_file(p) for p in paths if p.suffix.lower() not in {".zip",".rar",".7z"}}
                 combined="\n\n".join(f"### {n}\n{t}" for n,t in texts.items())
                 types=[classify(n,t) for n,t in texts.items()]; tipo=next((x for x in types if x!="No identificado"),"No identificado")
-                matches=re.findall(r"\b\d{4,}(?:[-/]\d+)*(?:-[A-Z]+)?\b",combined,re.I)
-                expediente=matches[0] if matches else "No identificado"
+                searchable="\n".join(texts.keys())+"\n"+combined
+                expediente=identify_exact_expediente(searchable) or "No identificado"
                 notice=None; due=None
                 if tipo=="Resolución TRASU":
                     notice=exact_notification(expediente) if expediente!="No identificado" else None
