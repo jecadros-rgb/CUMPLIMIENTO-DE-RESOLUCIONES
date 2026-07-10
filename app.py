@@ -134,7 +134,7 @@ def vision_ocr(path: Path) -> str:
             image=frame.convert("RGB"); image.thumbnail((1800,1800))
             buf=io.BytesIO(); image.save(buf,format="JPEG",quality=85)
             parts.append(types.Part.from_bytes(data=buf.getvalue(),mime_type="image/jpeg"))
-        response=genai.Client(api_key=get_api_key()).models.generate_content(
+        response=get_client(get_api_key()).models.generate_content(
             model=os.getenv("GEMINI_MODEL","gemini-2.0-flash"),contents=parts)
         return response.text
     except Exception as e:
@@ -190,7 +190,7 @@ def calculate_due(notification: str, context: str) -> tuple[str | None, str | No
     key=get_api_key()
     if not key: return None,"no hay una clave de Gemini configurada"
     try:
-        r=genai.Client(api_key=key).models.generate_content(
+        r=get_client(key).models.generate_content(
             model=os.getenv("GEMINI_MODEL","gemini-2.0-flash"),
             contents=context[:60000],
             config=types.GenerateContentConfig(
@@ -222,6 +222,11 @@ def get_api_key() -> str | None:
     try: return st.secrets.get("GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY")
     except Exception: return os.getenv("GOOGLE_API_KEY")
 
+@st.cache_resource(show_spinner=False)
+def get_client(api_key: str) -> genai.Client:
+    """Reuse a single Gemini client; creating one per call closes shared connections mid-request."""
+    return genai.Client(api_key=api_key)
+
 def ai_evaluate(payload: dict[str,Any]) -> dict[str,Any]:
     template="PLANTILLAS cumplimiento.docx" if payload["tipo_acto"]=="Resolución TRASU" else "PLANTILLAS DENUNCIAS ACTUALIZADAS.docx"
     sources={"instrucciones":INSTRUCCIONES.read_text("utf-8",errors="ignore")[:50000],"plantilla":source_text(template),
@@ -229,14 +234,14 @@ def ai_evaluate(payload: dict[str,Any]) -> dict[str,Any]:
     schema={"ficha":{"expediente":"","empresa_operadora":"","usuario_abonado":"","servicio":"","tipo_acto":"","numero_acto":"","fecha_notificacion_emision":"","fecha_vencimiento":"","obligacion_principal":"","medios_probatorios":[]},"trazabilidad":[],"evaluacion_juridica":{"checklist":[],"sustento_breve":"","tipo_incumplimiento":""},"resultado":"Cumplió|Incumplió|Inejecutable","subsanacion_voluntaria":"aplica|no aplica|no corresponde","clasificacion":"PAS|NO PAS","parrafo_final":"","datos_pendientes":[]}
     system="Eres analista jurídico de OSIPTEL. Usa SOLO la evidencia y fuentes entregadas. No inventes fechas, pruebas ni conclusiones. Lo faltante es 'No identificado' o 'Pendiente de verificación'. Devuelve JSON válido conforme al esquema."
     user=json.dumps({"esquema":schema,"caso":payload,"fuentes":sources},ensure_ascii=False)
-    r=genai.Client(api_key=get_api_key()).models.generate_content(
+    r=get_client(get_api_key()).models.generate_content(
         model=os.getenv("GEMINI_MODEL","gemini-2.0-flash"),contents=user,
         config=types.GenerateContentConfig(system_instruction=system,response_mime_type="application/json"))
     return json.loads(r.text)
 
 def regenerate_paragraph(result: dict[str,Any]) -> str:
     context={"ficha":result.get("ficha",{}),"evaluacion_juridica":result.get("evaluacion_juridica",{}),"resultado":result.get("resultado"),"subsanacion_voluntaria":result.get("subsanacion_voluntaria"),"clasificacion":result.get("clasificacion"),"datos_pendientes":result.get("datos_pendientes",[]),"instrucciones":INSTRUCCIONES.read_text("utf-8",errors="ignore")[:40000]}
-    response=genai.Client(api_key=get_api_key()).models.generate_content(
+    response=get_client(get_api_key()).models.generate_content(
         model=os.getenv("GEMINI_MODEL","gemini-2.0-flash"),contents=json.dumps(context,ensure_ascii=False),
         config=types.GenerateContentConfig(system_instruction="Regenera únicamente el párrafo jurídico final con los datos aportados. No inventes ni completes faltantes. Devuelve JSON {parrafo_final:string}.",response_mime_type="application/json"))
     return json.loads(response.text)["parrafo_final"]
