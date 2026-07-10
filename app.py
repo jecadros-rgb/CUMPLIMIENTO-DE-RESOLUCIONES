@@ -70,12 +70,14 @@ def gemini_text(system: str, user: Any, json_mode: bool=False) -> str:
     config=types.GenerateContentConfig(system_instruction=system)
     if json_mode: config.response_mime_type="application/json"
     client=gemini_client()
-    response=client.models.generate_content(
-        model="gemini-3.5-flash",
-        contents=user,
-        config=config,
-    )
-    return response.text
+    last_error=None
+    for model in ("gemini-3.5-flash","gemini-3.1-flash-lite"):
+        try:
+            response=client.models.generate_content(model=model,contents=user,config=config)
+            return response.text
+        except Exception as e:
+            last_error=e
+    raise last_error
 
 def fuente_status() -> tuple[bool, list[str]]:
     faltan = [n for n in FUENTES_REQUERIDAS if not (FUENTES / n).is_file()]
