@@ -72,10 +72,7 @@ def gemini_client():
     return genai.Client(api_key=get_api_key())
 
 def gemini_text(system: str, user: Any, json_mode: bool=False, fast: bool=False) -> str:
-    # thinking_level bajo deja más presupuesto de salida para el JSON en sí y evita
-    # que el modelo se quede sin tokens (MAX_TOKENS) antes de escribir la respuesta.
-    config=types.GenerateContentConfig(system_instruction=system,max_output_tokens=32768,
-        thinking_config=types.ThinkingConfig(thinking_level="LOW"))
+    config=types.GenerateContentConfig(system_instruction=system,max_output_tokens=32768)
     if json_mode: config.response_mime_type="application/json"
     client=gemini_client()
     last_error=None
