@@ -149,6 +149,11 @@ def identify_exact_expediente(context: str) -> str | None:
     unique=list(dict.fromkeys(candidates))
     return unique[0] if len(unique)==1 else None
 
+def parse_trasu_name(names: str) -> str | None:
+    compact=re.sub(r"[^A-Z0-9]","",names.upper())
+    match=re.search(r"(\d{7})(20\d{2})TRASUSTRA",compact)
+    return f"{match.group(1)}-{match.group(2)}/TRASU/ST-RA" if match else None
+
 def source_text(name: str, limit=50000) -> str:
     return read_file(FUENTES/name)[:limit]
 
@@ -226,7 +231,7 @@ if analyze:
                 combined="\n\n".join(f"### {n}\n{t}" for n,t in texts.items())
                 types=[classify(n,t) for n,t in texts.items()]; tipo=next((x for x in types if x!="No identificado"),"No identificado")
                 searchable="\n".join(u.name for u in uploads)
-                expediente=identify_exact_expediente(searchable) or "No identificado"
+                expediente=parse_trasu_name(searchable) or identify_exact_expediente(searchable) or "No identificado"
                 notice=None; due=None
                 if tipo=="Resolución TRASU":
                     notice=exact_notification(expediente) if expediente!="No identificado" else None
