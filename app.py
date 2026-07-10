@@ -350,9 +350,6 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
     # análisis estructurado (checklist, matriz, trazabilidad) es extenso, generarlo
     # junto con el párrafo en una sola respuesta deja al párrafo sin presupuesto de
     # tokens y sale vacío. Aquí sí tiene su propio presupuesto completo.
-    # Se conserva la extracción probatoria detallada (cartas, fechas, montos) para
-    # que el párrafo pueda citarla; sin esto sale genérico aunque el JSON sea válido.
-    result["_evidencia_detallada"]=extraction
     try:
         paragraph=regenerate_paragraph(result)
         if paragraph.strip(): result["parrafo_final"]=paragraph
@@ -372,8 +369,8 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
     return result
 
 def regenerate_paragraph(result: dict[str,Any]) -> str:
-    context={"ficha":result.get("ficha",{}),"evaluacion_juridica":result.get("evaluacion_juridica",{}),"resultado":result.get("resultado"),"subsanacion_voluntaria":result.get("subsanacion_voluntaria"),"clasificacion":result.get("clasificacion"),"datos_pendientes":result.get("datos_pendientes",[]),"evidencia_detallada":result.get("_evidencia_detallada",{}),"instrucciones":INSTRUCCIONES.read_text("utf-8",errors="ignore")[:40000]}
-    system="""Redacta únicamente el párrafo jurídico final conforme a la plantilla TRASU, con el mismo nivel de detalle y precisión que un dictamen profesional. Usa evidencia_detallada (obligaciones, medios_probatorios con su documento/fecha/monto/cita, y matriz_cumplimiento) para citar expresamente los documentos concretos (números de carta, oficio o nota de crédito), fechas y montos; especifica qué periodos u obligaciones quedaron acreditados y cuáles no, y con qué medio. Está prohibido usar frases genéricas o vagas que no citen el medio probatorio concreto. No inventes ni completes datos faltantes: si evidencia_detallada no trae un dato, omítelo en vez de generalizar. Debes indicar literalmente la fecha de notificación, el plazo de cumplimiento (número y tipo de días) y la fecha de vencimiento que aparecen en la ficha; no puedes recalcularlos ni omitirlos. No afirmes que una programación, solicitud, carta o gestión en curso acredita ejecución si el resultado indica incumplimiento. Si el eximente de subsanación voluntaria no aplica, explica la razón concreta (falta de cese total y/o de reversión integral de los efectos) con una redacción clara, sin dobles negaciones ambiguas como 'al no tratarse de una materia que no restrinja el servicio'. Devuelve JSON {parrafo_final:string}."""
+    context={"ficha":result.get("ficha",{}),"evaluacion_juridica":result.get("evaluacion_juridica",{}),"resultado":result.get("resultado"),"subsanacion_voluntaria":result.get("subsanacion_voluntaria"),"clasificacion":result.get("clasificacion"),"datos_pendientes":result.get("datos_pendientes",[]),"instrucciones":INSTRUCCIONES.read_text("utf-8",errors="ignore")[:40000]}
+    system="""Redacta únicamente el párrafo jurídico final conforme a la plantilla TRASU, a partir de la ficha, el checklist y la conclusión ya determinados. No inventes ni completes datos faltantes. Debes indicar literalmente la fecha de notificación, el plazo de cumplimiento (número y tipo de días) y la fecha de vencimiento que aparecen en la ficha; no puedes recalcularlos ni omitirlos. No afirmes que una programación, solicitud, carta o gestión en curso acredita ejecución si el resultado indica incumplimiento. No apliques el eximente de subsanación voluntaria por el solo hecho de que la materia no restrinja el servicio. Devuelve JSON {parrafo_final:string}."""
     response=gemini_text(system,json.dumps(context,ensure_ascii=False),json_mode=True,deep=True)
     return json.loads(response)["parrafo_final"]
 
