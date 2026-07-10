@@ -346,14 +346,15 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
         result["clasificacion"]="PAS"
         result.setdefault("evaluacion_juridica",{}).setdefault("checklist",[]).append(
             "Regla obligatoria: existen periodos programados, en curso o no acreditados; no hubo ejecución íntegra, cese total ni reversión integral.")
-        locked={
-            "ficha":result.get("ficha",{}),"extraccion_probatoria":extraction,
-            "resultado_obligatorio":"Incumplió","subsanacion_obligatoria":"no aplica",
-            "clasificacion_obligatoria":"PAS","fuentes_aplicables":sources,
-        }
-        rewrite_system="""Redacta un único párrafo jurídico conforme a la plantilla TRASU. Las conclusiones indicadas como obligatorias están bloqueadas y no puedes modificarlas. Debes indicar literalmente la fecha de notificación, el plazo de cumplimiento (número y tipo de días) y la fecha de vencimiento que aparecen en la ficha; no puedes recalcularlos ni omitirlos. No afirmes que una programación, solicitud, carta o gestión en curso acredita ejecución. Explica que, al quedar periodos sin prueba de registro y activación efectiva, no hubo ejecución íntegra, cese total ni reversión integral. No apliques el eximente por el solo hecho de que no exista restricción del servicio. Devuelve JSON {parrafo_final:string}."""
-        rewritten=json.loads(gemini_text(rewrite_system,json.dumps(locked,ensure_ascii=False),json_mode=True,deep=True))
-        result["parrafo_final"]=rewritten.get("parrafo_final",result.get("parrafo_final",""))
+    # El párrafo se redacta en una llamada aparte, dedicada solo a la prosa: si el
+    # análisis estructurado (checklist, matriz, trazabilidad) es extenso, generarlo
+    # junto con el párrafo en una sola respuesta deja al párrafo sin presupuesto de
+    # tokens y sale vacío. Aquí sí tiene su propio presupuesto completo.
+    try:
+        paragraph=regenerate_paragraph(result)
+        if paragraph.strip(): result["parrafo_final"]=paragraph
+    except Exception as e:
+        st.warning(f"No se pudo redactar el párrafo final: {e}")
     # Avoid an accidental exact duplication of the generated paragraph.
     paragraph=str(result.get("parrafo_final","")).strip()
     half=len(paragraph)//2
@@ -369,7 +370,8 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
 
 def regenerate_paragraph(result: dict[str,Any]) -> str:
     context={"ficha":result.get("ficha",{}),"evaluacion_juridica":result.get("evaluacion_juridica",{}),"resultado":result.get("resultado"),"subsanacion_voluntaria":result.get("subsanacion_voluntaria"),"clasificacion":result.get("clasificacion"),"datos_pendientes":result.get("datos_pendientes",[]),"instrucciones":INSTRUCCIONES.read_text("utf-8",errors="ignore")[:40000]}
-    response=gemini_text("Regenera únicamente el párrafo jurídico final con los datos aportados. No inventes ni completes faltantes. Devuelve JSON {parrafo_final:string}.",json.dumps(context,ensure_ascii=False),json_mode=True,deep=True)
+    system="""Redacta únicamente el párrafo jurídico final conforme a la plantilla TRASU, a partir de la ficha, el checklist y la conclusión ya determinados. No inventes ni completes datos faltantes. Debes indicar literalmente la fecha de notificación, el plazo de cumplimiento (número y tipo de días) y la fecha de vencimiento que aparecen en la ficha; no puedes recalcularlos ni omitirlos. No afirmes que una programación, solicitud, carta o gestión en curso acredita ejecución si el resultado indica incumplimiento. No apliques el eximente de subsanación voluntaria por el solo hecho de que la materia no restrinja el servicio. Devuelve JSON {parrafo_final:string}."""
+    response=gemini_text(system,json.dumps(context,ensure_ascii=False),json_mode=True,deep=True)
     return json.loads(response)["parrafo_final"]
 
 def to_row(result: dict, documents: list[str]) -> dict:
