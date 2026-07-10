@@ -373,13 +373,20 @@ def excel_bytes(row: dict | None=None) -> bytes:
     with pd.ExcelWriter(b,engine="openpyxl") as w: existing.to_excel(w,index=False,sheet_name="Evaluaciones")
     return b.getvalue()
 
-for k,v in {"result":None,"docs":[],"texts":{},"notice":None,"due":None}.items(): st.session_state.setdefault(k,v)
+for k,v in {"result":None,"docs":[],"texts":{},"notice":None,"due":None,
+            "analysis_error":None,"analysis_status":None,"upload_signature":None}.items():
+    st.session_state.setdefault(k,v)
 
 left,center,right=st.columns([1.05,2.25,1.05],gap="large")
 with left:
     st.markdown('<div class="light">Expediente particular</div>',unsafe_allow_html=True)
     uploads=st.file_uploader("Cargar expediente",accept_multiple_files=True,type=["pdf","docx","xlsx","xls","csv","txt","png","jpg","jpeg","tif","tiff","zip","rar","7z"])
     if uploads:
+        signature="|".join(f"{u.name}:{u.size}" for u in uploads)
+        if signature!=st.session_state.upload_signature:
+            st.session_state.result=None; st.session_state.analysis_error=None
+            st.session_state.analysis_status="Archivos nuevos listos para analizar"
+            st.session_state.upload_signature=signature
         st.session_state.docs=[u.name for u in uploads]
         for u in uploads:
             kind=classify(u.name,""); st.caption(f"✓ {u.name} · {kind}")
@@ -391,6 +398,8 @@ with left:
     analyze=st.button("✦ Analizar expediente con IA",type="primary",use_container_width=True,disabled=not uploads)
 
 if analyze:
+    st.session_state.result=None; st.session_state.analysis_error=None
+    st.session_state.analysis_status="Análisis iniciado"
     if not ok_sources: st.error("La herramienta no puede emitir evaluación final porque no tiene acceso a las fuentes permanentes")
     elif not get_api_key(): st.error("Configure GEMINI_API_KEY en .env o en los secretos de Streamlit.")
     else:
@@ -410,6 +419,9 @@ if analyze:
                         seen_hashes.add(digest); unique_paths.append(p)
                 paths=unique_paths
                 texts={p.name:read_file(p) for p in paths if p.suffix.lower() not in {".zip",".rar",".7z"}}
+                if not texts or not any(str(x).strip() for x in texts.values()):
+                    raise ValueError("No se pudo extraer texto de los archivos del expediente.")
+                st.session_state.analysis_status="Documentos leídos; verificando expediente y plazo"
                 combined="\n\n".join(f"### {n}\n{t}" for n,t in texts.items())
                 document_types=[classify(n,t) for n,t in texts.items()]; tipo=next((x for x in document_types if x!="No identificado"),"No identificado")
                 searchable="\n".join(u.name for u in uploads)
@@ -417,16 +429,25 @@ if analyze:
                 notice=None; due=None; term=None
                 if tipo=="Resolución TRASU":
                     notice=exact_notification(expediente) if expediente!="No identificado" else None
-                    if not notice: st.error("No se puede emitir evaluación final porque no se encontró coincidencia exacta del expediente en notificaciones mayo.xlsx")
+                    if not notice:
+                        st.session_state.analysis_error="No se encontró coincidencia exacta del expediente en notificaciones mayo.xlsx. Expediente detectado: "+expediente
                     else:
                         deadline=calculate_due(notice,combined)
                         if deadline: due,term=deadline
-                        if not deadline: st.error("No se puede emitir evaluación final porque no se pudo calcular el vencimiento con CONTADOR DE PLAZOS - TRASU 2026.xlsx")
+                        if not deadline: st.session_state.analysis_error="No se pudo determinar el plazo o calcular el vencimiento con CONTADOR DE PLAZOS - TRASU 2026.xlsx"
                 if tipo!="Resolución TRASU" or (notice and due):
+                    st.session_state.analysis_status="Aplicando instrucciones, criterios, pautas y plantillas"
                     payload={"tipo_acto":tipo,"expediente_detectado":expediente,"fecha_verificada":notice or "No identificado","plazo_verificado":term or "Pendiente de verificación","fecha_vencimiento":due or "Pendiente de verificación","documentos":texts}
                     st.session_state.result=ai_evaluate(payload); st.session_state.texts=texts
-            except Exception as e: st.error(f"No se pudo completar el análisis: {e}")
+                    st.session_state.analysis_status="Evaluación completada"
+            except Exception as e:
+                st.session_state.analysis_error=f"No se pudo completar el análisis: {type(e).__name__}: {e}"
             finally: shutil.rmtree(case_dir,ignore_errors=True)
+
+if st.session_state.analysis_error:
+    st.error(st.session_state.analysis_error)
+elif st.session_state.analysis_status:
+    st.info(st.session_state.analysis_status)
 
 r=st.session_state.result
 with center:
