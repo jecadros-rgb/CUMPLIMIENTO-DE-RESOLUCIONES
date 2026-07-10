@@ -16,8 +16,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+from openai import OpenAI
 
 BASE = Path(__file__).resolve().parent
 FUENTES = BASE / "fuentes_permanentes"
@@ -129,14 +128,16 @@ def vision_ocr(path: Path) -> str:
     try:
         from PIL import Image, ImageSequence
         source=Image.open(path)
-        parts=[types.Part.from_text(text="Transcribe fielmente todo el texto jurídico visible, página por página. No resumas ni inventes.")]
+        content=[{"type":"input_text","text":"Transcribe fielmente todo el texto jurídico visible, página por página. No resumas ni inventes."}]
         for frame in list(ImageSequence.Iterator(source))[:20]:
             image=frame.convert("RGB"); image.thumbnail((1800,1800))
             buf=io.BytesIO(); image.save(buf,format="JPEG",quality=85)
-            parts.append(types.Part.from_bytes(data=buf.getvalue(),mime_type="image/jpeg"))
-        response=genai.Client(api_key=get_api_key()).models.generate_content(
-            model=os.getenv("GEMINI_MODEL","gemini-2.0-flash"),contents=parts)
-        return response.text
+            data=base64.b64encode(buf.getvalue()).decode()
+            content.append({"type":"input_image","image_url":f"data:image/jpeg;base64,{data}"})
+        response=OpenAI(api_key=get_api_key()).responses.create(
+            model=os.getenv("OPENAI_MODEL","gpt-4.1-mini"),
+            input=[{"role":"user","content":content}])
+        return response.output_text
     except Exception as e:
         return f"[OCR no disponible para {path.name}: {e}]"
 
@@ -188,18 +189,15 @@ def calculate_due(notification: str, context: str) -> tuple[str | None, str | No
     instead of a generic message.
     """
     key=get_api_key()
-    if not key: return None,"no hay una clave de Gemini configurada"
+    if not key: return None,"no hay una clave de OpenAI configurada"
     try:
-        r=genai.Client(api_key=key).models.generate_content(
-            model=os.getenv("GEMINI_MODEL","gemini-2.0-flash"),
-            contents=context[:60000],
-            config=types.GenerateContentConfig(
-                system_instruction="Extrae SOLO datos expresos de la resolución para usar la pestaña Calculadora libre. Devuelve JSON: {numero_dias: integer|null, tipo_dias: 'Habiles'|'Calendario'|null, ubicacion: 'Lima'|'Otra'|null, evidencia: string}. No infieras un plazo ausente.",
-                response_mime_type="application/json"))
+        r=OpenAI(api_key=key).responses.create(model=os.getenv("OPENAI_MODEL","gpt-4.1-mini"),input=[
+            {"role":"system","content":"Extrae SOLO datos expresos de la resolución para usar la pestaña Calculadora libre. Devuelve JSON: {numero_dias: integer|null, tipo_dias: 'Habiles'|'Calendario'|null, ubicacion: 'Lima'|'Otra'|null, evidencia: string}. No infieras un plazo ausente."},
+            {"role":"user","content":context[:60000]}],text={"format":{"type":"json_object"}})
     except Exception as e:
         return None,f"la IA no pudo procesar la solicitud ({e})"
     try:
-        params=json.loads(r.text)
+        params=json.loads(r.output_text)
     except Exception as e:
         return None,f"la IA devolvió una respuesta no válida ({e})"
     days=params.get("numero_dias"); kind=params.get("tipo_dias"); location=params.get("ubicacion")
@@ -219,8 +217,8 @@ def calculate_due(notification: str, context: str) -> tuple[str | None, str | No
     return (start.normalize()+offset).strftime("%Y-%m-%d"),None
 
 def get_api_key() -> str | None:
-    try: return st.secrets.get("GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    except Exception: return os.getenv("GOOGLE_API_KEY")
+    try: return st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    except Exception: return os.getenv("OPENAI_API_KEY")
 
 def ai_evaluate(payload: dict[str,Any]) -> dict[str,Any]:
     template="PLANTILLAS cumplimiento.docx" if payload["tipo_acto"]=="Resolución TRASU" else "PLANTILLAS DENUNCIAS ACTUALIZADAS.docx"
@@ -229,17 +227,13 @@ def ai_evaluate(payload: dict[str,Any]) -> dict[str,Any]:
     schema={"ficha":{"expediente":"","empresa_operadora":"","usuario_abonado":"","servicio":"","tipo_acto":"","numero_acto":"","fecha_notificacion_emision":"","fecha_vencimiento":"","obligacion_principal":"","medios_probatorios":[]},"trazabilidad":[],"evaluacion_juridica":{"checklist":[],"sustento_breve":"","tipo_incumplimiento":""},"resultado":"Cumplió|Incumplió|Inejecutable","subsanacion_voluntaria":"aplica|no aplica|no corresponde","clasificacion":"PAS|NO PAS","parrafo_final":"","datos_pendientes":[]}
     system="Eres analista jurídico de OSIPTEL. Usa SOLO la evidencia y fuentes entregadas. No inventes fechas, pruebas ni conclusiones. Lo faltante es 'No identificado' o 'Pendiente de verificación'. Devuelve JSON válido conforme al esquema."
     user=json.dumps({"esquema":schema,"caso":payload,"fuentes":sources},ensure_ascii=False)
-    r=genai.Client(api_key=get_api_key()).models.generate_content(
-        model=os.getenv("GEMINI_MODEL","gemini-2.0-flash"),contents=user,
-        config=types.GenerateContentConfig(system_instruction=system,response_mime_type="application/json"))
-    return json.loads(r.text)
+    r=OpenAI(api_key=get_api_key()).responses.create(model=os.getenv("OPENAI_MODEL","gpt-4.1-mini"),input=[{"role":"system","content":system},{"role":"user","content":user}],text={"format":{"type":"json_object"}})
+    return json.loads(r.output_text)
 
 def regenerate_paragraph(result: dict[str,Any]) -> str:
     context={"ficha":result.get("ficha",{}),"evaluacion_juridica":result.get("evaluacion_juridica",{}),"resultado":result.get("resultado"),"subsanacion_voluntaria":result.get("subsanacion_voluntaria"),"clasificacion":result.get("clasificacion"),"datos_pendientes":result.get("datos_pendientes",[]),"instrucciones":INSTRUCCIONES.read_text("utf-8",errors="ignore")[:40000]}
-    response=genai.Client(api_key=get_api_key()).models.generate_content(
-        model=os.getenv("GEMINI_MODEL","gemini-2.0-flash"),contents=json.dumps(context,ensure_ascii=False),
-        config=types.GenerateContentConfig(system_instruction="Regenera únicamente el párrafo jurídico final con los datos aportados. No inventes ni completes faltantes. Devuelve JSON {parrafo_final:string}.",response_mime_type="application/json"))
-    return json.loads(response.text)["parrafo_final"]
+    response=OpenAI(api_key=get_api_key()).responses.create(model=os.getenv("OPENAI_MODEL","gpt-4.1-mini"),input=[{"role":"system","content":"Regenera únicamente el párrafo jurídico final con los datos aportados. No inventes ni completes faltantes. Devuelve JSON {parrafo_final:string}."},{"role":"user","content":json.dumps(context,ensure_ascii=False)}],text={"format":{"type":"json_object"}})
+    return json.loads(response.output_text)["parrafo_final"]
 
 def to_row(result: dict, documents: list[str]) -> dict:
     f=result.get("ficha",{}); e=result.get("evaluacion_juridica",{})
@@ -271,7 +265,7 @@ with left:
 
 if analyze:
     if not ok_sources: st.error("La herramienta no puede emitir evaluación final porque no tiene acceso a las fuentes permanentes")
-    elif not get_api_key(): st.error("Configure GOOGLE_API_KEY en .env o en los secretos de Streamlit.")
+    elif not get_api_key(): st.error("Configure OPENAI_API_KEY en .env o en los secretos de Streamlit.")
     else:
         with st.spinner("Procesando y contrastando el expediente..."):
             case_dir=Path(tempfile.mkdtemp(prefix="caso_",dir=TEMP))

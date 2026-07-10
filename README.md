@@ -13,7 +13,7 @@ Dashboard LegalTech en Streamlit para evaluar el cumplimiento de actos de OSIPTE
    - `CRITERIOS DE EVALUACION DE CUMPLIMIENTO.xlsx`
    - `PAUTAS PAS.xlsx`
 3. Reemplace el marcador de `instrucciones/instrucciones_juridicas.txt` por las instrucciones jurídicas reales de “PÁRRAFOS DE EVALUACIÓN”.
-4. Duplique `.env.example` como `.env` y añada su clave de Google Gemini (gratuita, sin tarjeta, en https://aistudio.google.com/apikey). Nunca suba `.env` al repositorio.
+4. Duplique `.env.example` como `.env` y añada su clave de OpenAI. Nunca suba `.env` al repositorio.
 
 ## Ejecución local
 
@@ -37,8 +37,8 @@ En casos TRASU, la búsqueda en `NRO_EXPEDIENTE` es exacta y solo se toma `FEC_N
 3. En **Advanced settings → Secrets**, configure:
 
 ```toml
-GOOGLE_API_KEY = "su-clave"
-GEMINI_MODEL = "gemini-2.0-flash"
+OPENAI_API_KEY = "su-clave"
+OPENAI_MODEL = "gpt-4.1-mini"
 ```
 
 4. Despliegue la app y comparta el enlace generado. Para expedientes confidenciales se recomienda infraestructura privada, control de acceso y una política de retención; un enlace público no es apropiado.
