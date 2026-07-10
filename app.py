@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import base64
 import json
 import os
 import re
@@ -112,11 +113,33 @@ def read_file(path: Path) -> str:
         if ext==".csv": return pd.read_csv(path,dtype=str).fillna("").to_csv(index=False)
         if ext in {".txt",".md"}: return path.read_text("utf-8",errors="ignore")
         if ext in {".png",".jpg",".jpeg",".tif",".tiff",".bmp"}:
-            import pytesseract
-            from PIL import Image
-            return pytesseract.image_to_string(Image.open(path),lang="spa")
+            try:
+                import pytesseract
+                from PIL import Image
+                text=pytesseract.image_to_string(Image.open(path),lang="spa")
+                if text.strip(): return text
+            except Exception: pass
+            return vision_ocr(path)
     except Exception as e: return f"[Error al leer {path.name}: {e}]"
     return ""
+
+def vision_ocr(path: Path) -> str:
+    """OCR cloud fallback for scanned images, including TIFF converted to JPEG."""
+    try:
+        from PIL import Image, ImageSequence
+        source=Image.open(path)
+        content=[{"type":"input_text","text":"Transcribe fielmente todo el texto jurídico visible, página por página. No resumas ni inventes."}]
+        for frame in list(ImageSequence.Iterator(source))[:20]:
+            image=frame.convert("RGB"); image.thumbnail((1800,1800))
+            buf=io.BytesIO(); image.save(buf,format="JPEG",quality=85)
+            data=base64.b64encode(buf.getvalue()).decode()
+            content.append({"type":"input_image","image_url":f"data:image/jpeg;base64,{data}"})
+        response=OpenAI(api_key=get_api_key()).responses.create(
+            model=os.getenv("OPENAI_MODEL","gpt-4.1-mini"),
+            input=[{"role":"user","content":content}])
+        return response.output_text
+    except Exception as e:
+        return f"[OCR no disponible para {path.name}: {e}]"
 
 def classify(name: str, text: str) -> str:
     s=(name+" "+text[:3000]).lower()
@@ -159,15 +182,24 @@ def source_text(name: str, limit=50000) -> str:
     return read_file(FUENTES/name)[:limit]
 
 def calculate_due(notification: str, context: str) -> str | None:
-    """Ask the model to apply the permanent counter; never invent locally."""
+    """Extract explicit calculator inputs, then reproduce Calculadora libre exactly."""
     key=get_api_key()
     if not key: return None
-    prompt=f"Fecha verificada: {notification}\nCONTADOR:\n{source_text('CONTADOR DE PLAZOS - TRASU 2026.xlsx')}\nCASO:\n{context[:12000]}"
     try:
         r=OpenAI(api_key=key).responses.create(model=os.getenv("OPENAI_MODEL","gpt-4.1-mini"),input=[
-            {"role":"system","content":"Usa exclusivamente el contador aportado. Devuelve JSON {fecha_vencimiento: YYYY-MM-DD|null, sustento: string}. Si no es inequívoco, null."},
-            {"role":"user","content":prompt}],text={"format":{"type":"json_object"}})
-        return json.loads(r.output_text).get("fecha_vencimiento")
+            {"role":"system","content":"Extrae SOLO datos expresos de la resolución para usar la pestaña Calculadora libre. Devuelve JSON: {numero_dias: integer|null, tipo_dias: 'Habiles'|'Calendario'|null, ubicacion: 'Lima'|'Otra'|null, evidencia: string}. No infieras un plazo ausente."},
+            {"role":"user","content":context[:60000]}],text={"format":{"type":"json_object"}})
+        params=json.loads(r.output_text)
+        days=params.get("numero_dias"); kind=params.get("tipo_dias"); location=params.get("ubicacion")
+        start=pd.to_datetime(notification,dayfirst=True,errors="coerce")
+        if pd.isna(start) or not isinstance(days,int) or days<0 or kind not in {"Habiles","Calendario"}: return None
+        if kind=="Calendario": return (start+timedelta(days=days)).strftime("%Y-%m-%d")
+        holidays_book=pd.read_excel(FUENTES/"CONTADOR DE PLAZOS - TRASU 2026.xlsx",sheet_name="No laborables (2)",header=None)
+        col=1 if location=="Lima" else 2
+        if col>=holidays_book.shape[1]: return None
+        holidays=pd.to_datetime(holidays_book.iloc[:,col],errors="coerce").dropna().dt.normalize().unique()
+        offset=pd.offsets.CustomBusinessDay(n=days,weekmask="Mon Tue Wed Thu Fri",holidays=list(holidays))
+        return (start.normalize()+offset).strftime("%Y-%m-%d")
     except Exception: return None
 
 def get_api_key() -> str | None:
