@@ -128,9 +128,10 @@ def exact_notification(expediente: str) -> str | None:
     path=FUENTES/"notificaciones mayo.xlsx"
     for _,df in pd.read_excel(path,sheet_name=None,dtype=str).items():
         cols={str(c).strip().upper():c for c in df.columns}
-        if "NRO_EXPEDIENTE" in cols and "FEC_NOT_EMP_ELE_TEXTO" in cols:
+        date_key="FEC_NOT_EMP_ELE_TEXTO" if "FEC_NOT_EMP_ELE_TEXTO" in cols else ("FEC_NOT_EMP_ELE" if "FEC_NOT_EMP_ELE" in cols else None)
+        if "NRO_EXPEDIENTE" in cols and date_key:
             values=df[cols["NRO_EXPEDIENTE"]].fillna("").astype(str).str.strip()
-            hit=df.loc[values==expediente.strip(),cols["FEC_NOT_EMP_ELE_TEXTO"]]
+            hit=df.loc[values==expediente.strip(),cols[date_key]]
             if not hit.empty and pd.notna(hit.iloc[0]): return str(hit.iloc[0]).strip()
     return None
 
