@@ -72,7 +72,7 @@ def gemini_client():
     return genai.Client(api_key=get_api_key())
 
 def gemini_text(system: str, user: Any, json_mode: bool=False, fast: bool=False) -> str:
-    config=types.GenerateContentConfig(system_instruction=system)
+    config=types.GenerateContentConfig(system_instruction=system,max_output_tokens=32768)
     if json_mode: config.response_mime_type="application/json"
     client=gemini_client()
     last_error=None
@@ -80,7 +80,12 @@ def gemini_text(system: str, user: Any, json_mode: bool=False, fast: bool=False)
     for model in models:
         try:
             response=client.models.generate_content(model=model,contents=user,config=config)
-            return response.text
+            candidates=response.candidates or []
+            finish=str(candidates[0].finish_reason) if candidates else "SIN_CANDIDATOS"
+            text=response.text if candidates and candidates[0].content and candidates[0].content.parts else None
+            if not text:
+                raise RuntimeError(f"El modelo {model} no devolvió contenido utilizable (motivo: {finish}).")
+            return text
         except Exception as e:
             last_error=e
     raise last_error
@@ -204,45 +209,22 @@ def parse_trasu_name(names: str) -> str | None:
 def source_text(name: str, limit=50000) -> str:
     return read_file(FUENTES/name)[:limit]
 
-def _legal_tokens(value: Any) -> set[str]:
-    text=unicodedata.normalize("NFD",str(value).lower())
-    text="".join(c for c in text if unicodedata.category(c)!="Mn")
-    return {x for x in re.findall(r"[a-z0-9]{4,}",text) if x not in {
-        "para","como","esta","este","desde","hasta","sobre","entre","donde",
-        "empresa","operadora","resolucion","trasu","usuario","cumplimiento"}}
-
-def relevant_excel_rules(name: str, case_context: str, limit: int=28) -> str:
-    """Retrieve applicable rows instead of truncating a whole legal workbook."""
+def full_excel_text(name: str) -> str:
+    """Every row of every sheet, verbatim: no criterio o pauta puede omitirse."""
     book=pd.read_excel(FUENTES/name,sheet_name=None,dtype=str,header=None)
-    query=_legal_tokens(case_context)
-    ranked=[]
+    lines=[]
     for sheet,df in book.items():
         for idx,row in df.fillna("").iterrows():
             cells=[str(x).strip() for x in row.tolist() if str(x).strip()]
-            if not cells: continue
-            line=" | ".join(cells)
-            tokens=_legal_tokens(line)
-            score=len(query & tokens)
-            low=line.lower()
-            # Rules that govern every case must never disappear from context.
-            general=any(k in low for k in (
-                "cese total","reversión total","subsanación voluntaria",
-                "análisis por cada mandato","conclusión es por resolución",
-                "cumplimiento parcial","registro y activación de los descuentos",
-                "descuento recurrente","programación","no se cuente con ello, hay infracción"))
-            if general: score+=100
-            if score: ranked.append((score,sheet,int(idx)+1,line))
-    ranked.sort(key=lambda x:(-x[0],x[1],x[2]))
-    selected=ranked[:limit]
-    return "\n".join(f"[{name} / {s} / fila {r}] {line}" for _,s,r,line in selected)
+            if cells: lines.append(f"[{name} / {sheet} / fila {int(idx)+1}] "+" | ".join(cells))
+    return "\n".join(lines)
 
-def legal_sources(case_context: str, template: str) -> dict[str,str]:
+def legal_sources(template: str) -> dict[str,str]:
     return {
         "instrucciones":INSTRUCCIONES.read_text("utf-8",errors="ignore"),
         "plantilla_aplicable":source_text(template,80000),
-        "criterios_aplicables":relevant_excel_rules(
-            "CRITERIOS DE EVALUACION DE CUMPLIMIENTO.xlsx",case_context,34),
-        "pautas_pas_aplicables":relevant_excel_rules("PAUTAS PAS.xlsx",case_context,26),
+        "criterios_aplicables":full_excel_text("CRITERIOS DE EVALUACION DE CUMPLIMIENTO.xlsx"),
+        "pautas_pas_aplicables":full_excel_text("PAUTAS PAS.xlsx"),
     }
 
 def calculate_due(notification: str, context: str) -> tuple[str,str] | None:
@@ -284,8 +266,7 @@ def calculate_due(notification: str, context: str) -> tuple[str,str] | None:
 
 def ai_evaluate(payload: dict[str,Any]) -> dict[str,Any]:
     template="PLANTILLAS cumplimiento.docx" if payload["tipo_acto"]=="Resolución TRASU" else "PLANTILLAS DENUNCIAS ACTUALIZADAS.docx"
-    case_context=json.dumps(payload,ensure_ascii=False)
-    sources=legal_sources(case_context,template)
+    sources=legal_sources(template)
     extraction_schema={"acto":{"numero":"","fecha":"","mandato_textual":""},"obligaciones":[{"componente":"","periodo":"","plazo_expreso":"","prueba_exigible":""}],"medios_probatorios":[{"documento":"","fecha":"","hecho_acreditado":"","cita":"","estado":"ejecutado|programado|en_curso|no_acreditado"}],"matriz_cumplimiento":[{"componente":"","estado":"acreditado|parcial|no_acreditado","sustento":""}],"datos_no_identificados":[]}
     extraction_system="""Actúa como extractor jurídico OSIPTEL. Separa hechos de conclusiones. Identifica todas las obligaciones, periodos, montos y condiciones del mandato. Para cada prueba distingue ejecución efectiva de solicitud, programación, caso abierto o gestión en curso. Una afirmación de la empresa no prueba por sí sola el hecho. Cita el documento que respalda cada dato. No evalúes todavía PAS ni subsanación. Devuelve JSON conforme al esquema."""
     extraction=json.loads(gemini_text(extraction_system,json.dumps({"esquema":extraction_schema,"caso":payload},ensure_ascii=False),json_mode=True))
@@ -336,14 +317,20 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
         result["clasificacion"]="PAS"
         result.setdefault("evaluacion_juridica",{}).setdefault("checklist",[]).append(
             "Regla obligatoria: existen periodos programados, en curso o no acreditados; no hubo ejecución íntegra, cese total ni reversión integral.")
+    # Si el párrafo salió vacío (p. ej. el modelo agotó su presupuesto de tokens en
+    # el checklist/matriz antes de redactarlo) o hay una conclusión forzada por la
+    # regla anterior, se redacta con una llamada dedicada que recibe exactamente la
+    # misma evidencia y fuentes completas, para no perder grounding ni omitir reglas.
+    if incomplete or not str(result.get("parrafo_final","")).strip():
         locked={
             "ficha":result.get("ficha",{}),"extraccion_probatoria":extraction,
-            "resultado_obligatorio":"Incumplió","subsanacion_obligatoria":"no aplica",
-            "clasificacion_obligatoria":"PAS","fuentes_aplicables":sources,
+            "resultado":result.get("resultado"),"subsanacion_voluntaria":result.get("subsanacion_voluntaria"),
+            "clasificacion":result.get("clasificacion"),"fuentes_aplicables":sources,
         }
-        rewrite_system="""Redacta un único párrafo jurídico conforme a la plantilla TRASU. Las conclusiones indicadas como obligatorias están bloqueadas y no puedes modificarlas. Debes indicar literalmente la fecha de notificación, el plazo de cumplimiento (número y tipo de días) y la fecha de vencimiento que aparecen en la ficha; no puedes recalcularlos ni omitirlos. No afirmes que una programación, solicitud, carta o gestión en curso acredita ejecución. Explica que, al quedar periodos sin prueba de registro y activación efectiva, no hubo ejecución íntegra, cese total ni reversión integral. No apliques el eximente por el solo hecho de que no exista restricción del servicio. Devuelve JSON {parrafo_final:string}."""
+        rewrite_system="""Redacta un único párrafo jurídico conforme a la plantilla aplicable. Usa EXACTAMENTE el resultado, la subsanación voluntaria y la clasificación que ya vienen determinados en este JSON; no los cambies ni los contradigas. Cita expresamente, en lenguaje jurídico natural, los documentos, fechas y montos que figuren en extraccion_probatoria (nunca el nombre de archivo literal ni la etiqueta 'documento:'; descríbelos como 'mediante carta N.° ...' o 'mediante correo electrónico de fecha ... con acuse de recibo de fecha ...'). Debes indicar literalmente la fecha de notificación, el plazo de cumplimiento (número y tipo de días) y la fecha de vencimiento que aparecen en la ficha, en formato DD/MM/AAAA; no las recalcules ni las omitas. Si el resultado es Incumplió, no afirmes que una programación, solicitud o gestión en curso acredita ejecución. Si la subsanación voluntaria es 'no aplica', explica la razón concreta (falta de cese total y/o de reversión integral) con redacción clara, sin dobles negaciones ambiguas. Devuelve JSON {parrafo_final:string}."""
         rewritten=json.loads(gemini_text(rewrite_system,json.dumps(locked,ensure_ascii=False),json_mode=True))
-        result["parrafo_final"]=rewritten.get("parrafo_final",result.get("parrafo_final",""))
+        candidate=str(rewritten.get("parrafo_final","")).strip()
+        if candidate: result["parrafo_final"]=candidate
     # Avoid an accidental exact duplication of the generated paragraph.
     paragraph=str(result.get("parrafo_final","")).strip()
     half=len(paragraph)//2
