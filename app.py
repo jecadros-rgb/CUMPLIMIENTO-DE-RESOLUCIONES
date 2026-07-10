@@ -71,26 +71,16 @@ def get_api_key() -> str | None:
 def gemini_client():
     return genai.Client(api_key=get_api_key())
 
-def gemini_text(system: str, user: Any, json_mode: bool=False, fast: bool=False, deep: bool=False) -> str:
-    config=types.GenerateContentConfig(system_instruction=system,max_output_tokens=32768)
+def gemini_text(system: str, user: Any, json_mode: bool=False, fast: bool=False) -> str:
+    config=types.GenerateContentConfig(system_instruction=system)
     if json_mode: config.response_mime_type="application/json"
     client=gemini_client()
     last_error=None
-    # El razonamiento jurídico (extracción probatoria y redacción del párrafo final)
-    # necesita un modelo de razonamiento profundo; si no está disponible, cae a flash.
-    if deep: models=("gemini-3.1-pro-preview","gemini-3.5-flash","gemini-3.1-flash-lite")
-    elif fast: models=("gemini-3.1-flash-lite","gemini-3.5-flash")
-    else: models=("gemini-3.5-flash","gemini-3.1-flash-lite")
+    models=("gemini-3.1-flash-lite","gemini-3.5-flash") if fast else ("gemini-3.5-flash","gemini-3.1-flash-lite")
     for model in models:
         try:
             response=client.models.generate_content(model=model,contents=user,config=config)
-            candidates=response.candidates or []
-            finish=str(candidates[0].finish_reason) if candidates else "SIN_CANDIDATOS"
-            text=response.text if candidates and candidates[0].content and candidates[0].content.parts else None
-            if not text:
-                raise RuntimeError(f"El modelo {model} no devolvió contenido utilizable (motivo: {finish}). "
-                    "Puede deberse a un expediente demasiado extenso o a un bloqueo de seguridad.")
-            return text
+            return response.text
         except Exception as e:
             last_error=e
     raise last_error
@@ -298,7 +288,7 @@ def ai_evaluate(payload: dict[str,Any]) -> dict[str,Any]:
     sources=legal_sources(case_context,template)
     extraction_schema={"acto":{"numero":"","fecha":"","mandato_textual":""},"obligaciones":[{"componente":"","periodo":"","plazo_expreso":"","prueba_exigible":""}],"medios_probatorios":[{"documento":"","fecha":"","hecho_acreditado":"","cita":"","estado":"ejecutado|programado|en_curso|no_acreditado"}],"matriz_cumplimiento":[{"componente":"","estado":"acreditado|parcial|no_acreditado","sustento":""}],"datos_no_identificados":[]}
     extraction_system="""Actúa como extractor jurídico OSIPTEL. Separa hechos de conclusiones. Identifica todas las obligaciones, periodos, montos y condiciones del mandato. Para cada prueba distingue ejecución efectiva de solicitud, programación, caso abierto o gestión en curso. Una afirmación de la empresa no prueba por sí sola el hecho. Cita el documento que respalda cada dato. No evalúes todavía PAS ni subsanación. Devuelve JSON conforme al esquema."""
-    extraction=json.loads(gemini_text(extraction_system,json.dumps({"esquema":extraction_schema,"caso":payload},ensure_ascii=False),json_mode=True,deep=True))
+    extraction=json.loads(gemini_text(extraction_system,json.dumps({"esquema":extraction_schema,"caso":payload},ensure_ascii=False),json_mode=True))
     schema={"ficha":{"expediente":"","empresa_operadora":"","usuario_abonado":"","servicio":"","tipo_acto":"","numero_acto":"","fecha_notificacion_emision":"","plazo_cumplimiento":"","fecha_vencimiento":"","obligacion_principal":"","medios_probatorios":[]},"trazabilidad":[],"evaluacion_juridica":{"checklist":[],"sustento_breve":"","tipo_incumplimiento":""},"resultado":"Cumplió|Incumplió|Inejecutable","subsanacion_voluntaria":"aplica|no aplica|no corresponde","clasificacion":"PAS|NO PAS","parrafo_final":"","datos_pendientes":[]}
     system="""Eres analista jurídico senior de OSIPTEL. Usa SOLO la evidencia y fuentes entregadas. No inventes fechas, pruebas ni conclusiones. Lo faltante es 'No identificado' o 'Pendiente de verificación'.
 
@@ -330,7 +320,7 @@ MÉTODO Y CONTROLES JURÍDICOS OBLIGATORIOS (en este orden):
 
 Devuelve JSON válido conforme al esquema y un párrafo final completo, cronológico, con obligación, pruebas por periodo, contraste, conclusión y análisis separado de subsanación."""
     user=json.dumps({"esquema":schema,"caso":{k:v for k,v in payload.items() if k!="documentos"},"extraccion_probatoria":extraction,"fuentes":sources},ensure_ascii=False)
-    result=json.loads(gemini_text(system,user,json_mode=True,deep=True))
+    result=json.loads(gemini_text(system,user,json_mode=True))
     # Verified spreadsheet values are authoritative; the model cannot recalculate them.
     result.setdefault("ficha",{})["expediente"]=payload.get("expediente_detectado","No identificado")
     result["ficha"]["fecha_notificacion_emision"]=payload.get("fecha_verificada","No identificado")
@@ -346,15 +336,14 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
         result["clasificacion"]="PAS"
         result.setdefault("evaluacion_juridica",{}).setdefault("checklist",[]).append(
             "Regla obligatoria: existen periodos programados, en curso o no acreditados; no hubo ejecución íntegra, cese total ni reversión integral.")
-    # El párrafo se redacta en una llamada aparte, dedicada solo a la prosa: si el
-    # análisis estructurado (checklist, matriz, trazabilidad) es extenso, generarlo
-    # junto con el párrafo en una sola respuesta deja al párrafo sin presupuesto de
-    # tokens y sale vacío. Aquí sí tiene su propio presupuesto completo.
-    try:
-        paragraph=regenerate_paragraph(result)
-        if paragraph.strip(): result["parrafo_final"]=paragraph
-    except Exception as e:
-        st.warning(f"No se pudo redactar el párrafo final: {e}")
+        locked={
+            "ficha":result.get("ficha",{}),"extraccion_probatoria":extraction,
+            "resultado_obligatorio":"Incumplió","subsanacion_obligatoria":"no aplica",
+            "clasificacion_obligatoria":"PAS","fuentes_aplicables":sources,
+        }
+        rewrite_system="""Redacta un único párrafo jurídico conforme a la plantilla TRASU. Las conclusiones indicadas como obligatorias están bloqueadas y no puedes modificarlas. Debes indicar literalmente la fecha de notificación, el plazo de cumplimiento (número y tipo de días) y la fecha de vencimiento que aparecen en la ficha; no puedes recalcularlos ni omitirlos. No afirmes que una programación, solicitud, carta o gestión en curso acredita ejecución. Explica que, al quedar periodos sin prueba de registro y activación efectiva, no hubo ejecución íntegra, cese total ni reversión integral. No apliques el eximente por el solo hecho de que no exista restricción del servicio. Devuelve JSON {parrafo_final:string}."""
+        rewritten=json.loads(gemini_text(rewrite_system,json.dumps(locked,ensure_ascii=False),json_mode=True))
+        result["parrafo_final"]=rewritten.get("parrafo_final",result.get("parrafo_final",""))
     # Avoid an accidental exact duplication of the generated paragraph.
     paragraph=str(result.get("parrafo_final","")).strip()
     half=len(paragraph)//2
@@ -370,8 +359,7 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
 
 def regenerate_paragraph(result: dict[str,Any]) -> str:
     context={"ficha":result.get("ficha",{}),"evaluacion_juridica":result.get("evaluacion_juridica",{}),"resultado":result.get("resultado"),"subsanacion_voluntaria":result.get("subsanacion_voluntaria"),"clasificacion":result.get("clasificacion"),"datos_pendientes":result.get("datos_pendientes",[]),"instrucciones":INSTRUCCIONES.read_text("utf-8",errors="ignore")[:40000]}
-    system="""Redacta únicamente el párrafo jurídico final conforme a la plantilla TRASU, a partir de la ficha, el checklist y la conclusión ya determinados. No inventes ni completes datos faltantes. Debes indicar literalmente la fecha de notificación, el plazo de cumplimiento (número y tipo de días) y la fecha de vencimiento que aparecen en la ficha; no puedes recalcularlos ni omitirlos. No afirmes que una programación, solicitud, carta o gestión en curso acredita ejecución si el resultado indica incumplimiento. No apliques el eximente de subsanación voluntaria por el solo hecho de que la materia no restrinja el servicio. Devuelve JSON {parrafo_final:string}."""
-    response=gemini_text(system,json.dumps(context,ensure_ascii=False),json_mode=True,deep=True)
+    response=gemini_text("Regenera únicamente el párrafo jurídico final con los datos aportados. No inventes ni completes faltantes. Devuelve JSON {parrafo_final:string}.",json.dumps(context,ensure_ascii=False),json_mode=True)
     return json.loads(response)["parrafo_final"]
 
 def to_row(result: dict, documents: list[str]) -> dict:
