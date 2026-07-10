@@ -225,7 +225,7 @@ if analyze:
                 texts={p.name:read_file(p) for p in paths if p.suffix.lower() not in {".zip",".rar",".7z"}}
                 combined="\n\n".join(f"### {n}\n{t}" for n,t in texts.items())
                 types=[classify(n,t) for n,t in texts.items()]; tipo=next((x for x in types if x!="No identificado"),"No identificado")
-                searchable="\n".join(texts.keys())+"\n"+combined
+                searchable="\n".join(u.name for u in uploads)
                 expediente=identify_exact_expediente(searchable) or "No identificado"
                 notice=None; due=None
                 if tipo=="Resolución TRASU":
