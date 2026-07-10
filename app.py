@@ -59,6 +59,23 @@ div[data-testid="stFileUploader"]{border:1px dashed #2e6078;border-radius:12px;p
 </style>""", unsafe_allow_html=True)
 st.markdown('<div class="hero"><span class="tag">OSIPTEL / TRASU</span><div class="brand">Cumple<b>TRASU</b></div><div class="sub">Evaluador Automatizado de Cumplimiento de Resoluciones</div></div>', unsafe_allow_html=True)
 
+def get_api_key() -> str | None:
+    try: return st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
+    except Exception: return os.getenv("GEMINI_API_KEY")
+
+def gemini_client():
+    return genai.Client(api_key=get_api_key())
+
+def gemini_text(system: str, user: Any, json_mode: bool=False) -> str:
+    config=types.GenerateContentConfig(system_instruction=system)
+    if json_mode: config.response_mime_type="application/json"
+    response=gemini_client().models.generate_content(
+        model=os.getenv("GEMINI_MODEL","gemini-2.5-flash"),
+        contents=user,
+        config=config,
+    )
+    return response.text
+
 def fuente_status() -> tuple[bool, list[str]]:
     faltan = [n for n in FUENTES_REQUERIDAS if not (FUENTES / n).is_file()]
     instrucciones_ok = INSTRUCCIONES.is_file() and INSTRUCCIONES.stat().st_size > 150
@@ -129,14 +146,12 @@ def vision_ocr(path: Path) -> str:
     try:
         from PIL import Image, ImageSequence
         source=Image.open(path)
-        parts=[types.Part.from_text(text="Transcribe fielmente todo el texto jurídico visible, página por página. No resumas ni inventes.")]
+        content=["Transcribe fielmente todo el texto jurídico visible, página por página. No resumas ni inventes."]
         for frame in list(ImageSequence.Iterator(source))[:20]:
             image=frame.convert("RGB"); image.thumbnail((1800,1800))
             buf=io.BytesIO(); image.save(buf,format="JPEG",quality=85)
-            parts.append(types.Part.from_bytes(data=buf.getvalue(),mime_type="image/jpeg"))
-        response=get_client(get_api_key()).models.generate_content(
-            model=os.getenv("GEMINI_MODEL","gemini-2.0-flash"),contents=parts)
-        return response.text
+            content.append(types.Part.from_bytes(data=buf.getvalue(),mime_type="image/jpeg"))
+        return gemini_text("Eres un sistema OCR jurídico preciso.",content)
     except Exception as e:
         return f"[OCR no disponible para {path.name}: {e}]"
 
@@ -180,52 +195,26 @@ def parse_trasu_name(names: str) -> str | None:
 def source_text(name: str, limit=50000) -> str:
     return read_file(FUENTES/name)[:limit]
 
-def calculate_due(notification: str, context: str) -> tuple[str | None, str | None]:
-    """Extract explicit calculator inputs, then reproduce Calculadora libre exactly.
-
-    Returns (fecha_vencimiento, motivo_error). motivo_error is set whenever the
-    calculation could not be completed, so the UI can explain the real cause
-    instead of a generic message.
-    """
+def calculate_due(notification: str, context: str) -> str | None:
+    """Extract explicit calculator inputs, then reproduce Calculadora libre exactly."""
     key=get_api_key()
-    if not key: return None,"no hay una clave de Gemini configurada"
+    if not key: return None
     try:
-        r=get_client(key).models.generate_content(
-            model=os.getenv("GEMINI_MODEL","gemini-2.0-flash"),
-            contents=context[:60000],
-            config=types.GenerateContentConfig(
-                system_instruction="Extrae SOLO datos expresos de la resolución para usar la pestaña Calculadora libre. Devuelve JSON: {numero_dias: integer|null, tipo_dias: 'Habiles'|'Calendario'|null, ubicacion: 'Lima'|'Otra'|null, evidencia: string}. No infieras un plazo ausente.",
-                response_mime_type="application/json"))
-    except Exception as e:
-        return None,f"la IA no pudo procesar la solicitud ({e})"
-    try:
-        params=json.loads(r.text)
-    except Exception as e:
-        return None,f"la IA devolvió una respuesta no válida ({e})"
-    days=params.get("numero_dias"); kind=params.get("tipo_dias"); location=params.get("ubicacion")
-    if not isinstance(days,int) or days<0 or kind not in {"Habiles","Calendario"}:
-        return None,"no se identificó en la resolución un plazo expreso en días (hábiles o calendario)"
-    start=pd.to_datetime(notification,errors="coerce")
-    if pd.isna(start): return None,f"la fecha de notificación '{notification}' no se pudo interpretar"
-    if kind=="Calendario": return (start+timedelta(days=days)).strftime("%Y-%m-%d"),None
-    try:
+        raw=gemini_text("Extrae SOLO datos expresos de la resolución para usar la pestaña Calculadora libre. Devuelve JSON: {numero_dias: integer|null, tipo_dias: 'Habiles'|'Calendario'|null, ubicacion: 'Lima'|'Otra'|null, evidencia: string}. No infieras un plazo ausente.",context[:60000],json_mode=True)
+        params=json.loads(raw)
+        days=params.get("numero_dias"); kind=params.get("tipo_dias"); location=params.get("ubicacion")
+        start=pd.to_datetime(notification,dayfirst=True,errors="coerce")
+        if pd.isna(start) or not isinstance(days,int) or days<0 or kind not in {"Habiles","Calendario"}: return None
+        if kind=="Calendario": return (start+timedelta(days=days)).strftime("%Y-%m-%d")
         holidays_book=pd.read_excel(FUENTES/"CONTADOR DE PLAZOS - TRASU 2026.xlsx",sheet_name="No laborables (2)",header=None)
+        col=1 if location=="Lima" else 2
+        if col>=holidays_book.shape[1]: return None
+        holidays=pd.to_datetime(holidays_book.iloc[:,col],errors="coerce").dropna().dt.normalize().unique()
+        offset=pd.offsets.CustomBusinessDay(n=days,weekmask="Mon Tue Wed Thu Fri",holidays=list(holidays))
+        return (start.normalize()+offset).strftime("%Y-%m-%d")
     except Exception as e:
-        return None,f"no se pudo leer la hoja 'No laborables (2)' de CONTADOR DE PLAZOS - TRASU 2026.xlsx ({e})"
-    col=1 if location=="Lima" else 2
-    if col>=holidays_book.shape[1]: return None,"CONTADOR DE PLAZOS - TRASU 2026.xlsx no tiene la columna de días no laborables esperada"
-    holidays=pd.to_datetime(holidays_book.iloc[:,col],errors="coerce").dropna().dt.normalize().unique()
-    offset=pd.offsets.CustomBusinessDay(n=days,weekmask="Mon Tue Wed Thu Fri",holidays=list(holidays))
-    return (start.normalize()+offset).strftime("%Y-%m-%d"),None
-
-def get_api_key() -> str | None:
-    try: return st.secrets.get("GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    except Exception: return os.getenv("GOOGLE_API_KEY")
-
-@st.cache_resource(show_spinner=False)
-def get_client(api_key: str) -> genai.Client:
-    """Reuse a single Gemini client; creating one per call closes shared connections mid-request."""
-    return genai.Client(api_key=api_key)
+        st.error(f"Gemini no pudo calcular el vencimiento: {e}")
+        return None
 
 def ai_evaluate(payload: dict[str,Any]) -> dict[str,Any]:
     template="PLANTILLAS cumplimiento.docx" if payload["tipo_acto"]=="Resolución TRASU" else "PLANTILLAS DENUNCIAS ACTUALIZADAS.docx"
@@ -234,17 +223,12 @@ def ai_evaluate(payload: dict[str,Any]) -> dict[str,Any]:
     schema={"ficha":{"expediente":"","empresa_operadora":"","usuario_abonado":"","servicio":"","tipo_acto":"","numero_acto":"","fecha_notificacion_emision":"","fecha_vencimiento":"","obligacion_principal":"","medios_probatorios":[]},"trazabilidad":[],"evaluacion_juridica":{"checklist":[],"sustento_breve":"","tipo_incumplimiento":""},"resultado":"Cumplió|Incumplió|Inejecutable","subsanacion_voluntaria":"aplica|no aplica|no corresponde","clasificacion":"PAS|NO PAS","parrafo_final":"","datos_pendientes":[]}
     system="Eres analista jurídico de OSIPTEL. Usa SOLO la evidencia y fuentes entregadas. No inventes fechas, pruebas ni conclusiones. Lo faltante es 'No identificado' o 'Pendiente de verificación'. Devuelve JSON válido conforme al esquema."
     user=json.dumps({"esquema":schema,"caso":payload,"fuentes":sources},ensure_ascii=False)
-    r=get_client(get_api_key()).models.generate_content(
-        model=os.getenv("GEMINI_MODEL","gemini-2.0-flash"),contents=user,
-        config=types.GenerateContentConfig(system_instruction=system,response_mime_type="application/json"))
-    return json.loads(r.text)
+    return json.loads(gemini_text(system,user,json_mode=True))
 
 def regenerate_paragraph(result: dict[str,Any]) -> str:
     context={"ficha":result.get("ficha",{}),"evaluacion_juridica":result.get("evaluacion_juridica",{}),"resultado":result.get("resultado"),"subsanacion_voluntaria":result.get("subsanacion_voluntaria"),"clasificacion":result.get("clasificacion"),"datos_pendientes":result.get("datos_pendientes",[]),"instrucciones":INSTRUCCIONES.read_text("utf-8",errors="ignore")[:40000]}
-    response=get_client(get_api_key()).models.generate_content(
-        model=os.getenv("GEMINI_MODEL","gemini-2.0-flash"),contents=json.dumps(context,ensure_ascii=False),
-        config=types.GenerateContentConfig(system_instruction="Regenera únicamente el párrafo jurídico final con los datos aportados. No inventes ni completes faltantes. Devuelve JSON {parrafo_final:string}.",response_mime_type="application/json"))
-    return json.loads(response.text)["parrafo_final"]
+    response=gemini_text("Regenera únicamente el párrafo jurídico final con los datos aportados. No inventes ni completes faltantes. Devuelve JSON {parrafo_final:string}.",json.dumps(context,ensure_ascii=False),json_mode=True)
+    return json.loads(response)["parrafo_final"]
 
 def to_row(result: dict, documents: list[str]) -> dict:
     f=result.get("ficha",{}); e=result.get("evaluacion_juridica",{})
@@ -276,7 +260,7 @@ with left:
 
 if analyze:
     if not ok_sources: st.error("La herramienta no puede emitir evaluación final porque no tiene acceso a las fuentes permanentes")
-    elif not get_api_key(): st.error("Configure GOOGLE_API_KEY en .env o en los secretos de Streamlit.")
+    elif not get_api_key(): st.error("Configure GEMINI_API_KEY en .env o en los secretos de Streamlit.")
     else:
         with st.spinner("Procesando y contrastando el expediente..."):
             case_dir=Path(tempfile.mkdtemp(prefix="caso_",dir=TEMP))
@@ -287,7 +271,7 @@ if analyze:
                 paths+=extract_archives(case_dir)
                 texts={p.name:read_file(p) for p in paths if p.suffix.lower() not in {".zip",".rar",".7z"}}
                 combined="\n\n".join(f"### {n}\n{t}" for n,t in texts.items())
-                tipos_detectados=[classify(n,t) for n,t in texts.items()]; tipo=next((x for x in tipos_detectados if x!="No identificado"),"No identificado")
+                types=[classify(n,t) for n,t in texts.items()]; tipo=next((x for x in types if x!="No identificado"),"No identificado")
                 searchable="\n".join(u.name for u in uploads)
                 expediente=parse_trasu_name(searchable) or identify_exact_expediente(searchable) or "No identificado"
                 notice=None; due=None
@@ -295,8 +279,8 @@ if analyze:
                     notice=exact_notification(expediente) if expediente!="No identificado" else None
                     if not notice: st.error("No se puede emitir evaluación final porque no se encontró coincidencia exacta del expediente en notificaciones mayo.xlsx")
                     else:
-                        due,due_error=calculate_due(notice,combined)
-                        if not due: st.error(f"No se puede emitir evaluación final porque no se pudo calcular el vencimiento con CONTADOR DE PLAZOS - TRASU 2026.xlsx: {due_error}")
+                        due=calculate_due(notice,combined)
+                        if not due: st.error("No se puede emitir evaluación final porque no se pudo calcular el vencimiento con CONTADOR DE PLAZOS - TRASU 2026.xlsx")
                 if tipo!="Resolución TRASU" or (notice and due):
                     payload={"tipo_acto":tipo,"expediente_detectado":expediente,"fecha_verificada":notice or "No identificado","fecha_vencimiento":due or "Pendiente de verificación","documentos":texts}
                     st.session_state.result=ai_evaluate(payload); st.session_state.texts=texts
