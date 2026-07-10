@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import io
 import base64
+import hashlib
 import json
 import os
 import re
 import shutil
 import tempfile
+import unicodedata
 import zipfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -66,12 +68,13 @@ def get_api_key() -> str | None:
 def gemini_client():
     return genai.Client(api_key=get_api_key())
 
-def gemini_text(system: str, user: Any, json_mode: bool=False) -> str:
+def gemini_text(system: str, user: Any, json_mode: bool=False, fast: bool=False) -> str:
     config=types.GenerateContentConfig(system_instruction=system)
     if json_mode: config.response_mime_type="application/json"
     client=gemini_client()
     last_error=None
-    for model in ("gemini-3.5-flash","gemini-3.1-flash-lite"):
+    models=("gemini-3.1-flash-lite","gemini-3.5-flash") if fast else ("gemini-3.5-flash","gemini-3.1-flash-lite")
+    for model in models:
         try:
             response=client.models.generate_content(model=model,contents=user,config=config)
             return response.text
@@ -154,7 +157,7 @@ def vision_ocr(path: Path) -> str:
             image=frame.convert("RGB"); image.thumbnail((1800,1800))
             buf=io.BytesIO(); image.save(buf,format="JPEG",quality=85)
             content.append(types.Part.from_bytes(data=buf.getvalue(),mime_type="image/jpeg"))
-        return gemini_text("Eres un sistema OCR jurídico preciso.",content)
+        return gemini_text("Eres un sistema OCR jurídico preciso.",content,fast=True)
     except Exception as e:
         return f"[OCR no disponible para {path.name}: {e}]"
 
@@ -198,14 +201,59 @@ def parse_trasu_name(names: str) -> str | None:
 def source_text(name: str, limit=50000) -> str:
     return read_file(FUENTES/name)[:limit]
 
+def _legal_tokens(value: Any) -> set[str]:
+    text=unicodedata.normalize("NFD",str(value).lower())
+    text="".join(c for c in text if unicodedata.category(c)!="Mn")
+    return {x for x in re.findall(r"[a-z0-9]{4,}",text) if x not in {
+        "para","como","esta","este","desde","hasta","sobre","entre","donde",
+        "empresa","operadora","resolucion","trasu","usuario","cumplimiento"}}
+
+def relevant_excel_rules(name: str, case_context: str, limit: int=28) -> str:
+    """Retrieve applicable rows instead of truncating a whole legal workbook."""
+    book=pd.read_excel(FUENTES/name,sheet_name=None,dtype=str,header=None)
+    query=_legal_tokens(case_context)
+    ranked=[]
+    for sheet,df in book.items():
+        for idx,row in df.fillna("").iterrows():
+            cells=[str(x).strip() for x in row.tolist() if str(x).strip()]
+            if not cells: continue
+            line=" | ".join(cells)
+            tokens=_legal_tokens(line)
+            score=len(query & tokens)
+            low=line.lower()
+            # Rules that govern every case must never disappear from context.
+            general=any(k in low for k in (
+                "cese total","reversión total","subsanación voluntaria",
+                "análisis por cada mandato","conclusión es por resolución",
+                "cumplimiento parcial","registro y activación de los descuentos",
+                "descuento recurrente","programación","no se cuente con ello, hay infracción"))
+            if general: score+=100
+            if score: ranked.append((score,sheet,int(idx)+1,line))
+    ranked.sort(key=lambda x:(-x[0],x[1],x[2]))
+    selected=ranked[:limit]
+    return "\n".join(f"[{name} / {s} / fila {r}] {line}" for _,s,r,line in selected)
+
+def legal_sources(case_context: str, template: str) -> dict[str,str]:
+    return {
+        "instrucciones":INSTRUCCIONES.read_text("utf-8",errors="ignore"),
+        "plantilla_aplicable":source_text(template,80000),
+        "criterios_aplicables":relevant_excel_rules(
+            "CRITERIOS DE EVALUACION DE CUMPLIMIENTO.xlsx",case_context,34),
+        "pautas_pas_aplicables":relevant_excel_rules("PAUTAS PAS.xlsx",case_context,26),
+    }
+
 def calculate_due(notification: str, context: str) -> str | None:
     """Extract explicit calculator inputs, then reproduce Calculadora libre exactly."""
     key=get_api_key()
     if not key: return None
     try:
-        raw=gemini_text("Extrae SOLO datos expresos de la resolución para usar la pestaña Calculadora libre. Devuelve JSON: {numero_dias: integer|null, tipo_dias: 'Habiles'|'Calendario'|null, ubicacion: 'Lima'|'Otra'|null, evidencia: string}. No infieras un plazo ausente.",context[:60000],json_mode=True)
+        raw=gemini_text("Extrae SOLO el plazo de cumplimiento otorgado a la empresa en la parte resolutiva, no otros plazos mencionados. Devuelve JSON: {numero_dias: integer|null, tipo_dias: 'Habiles'|'Calendario'|null, ubicacion: 'Lima'|'Otra'|null, evidencia: cita breve}. El numero debe aparecer expresamente en la evidencia; no lo infieras.",context[:60000],json_mode=True)
         params=json.loads(raw)
         days=params.get("numero_dias"); kind=params.get("tipo_dias"); location=params.get("ubicacion")
+        explicit=re.findall(r"(?:plazo|t[eé]rmino)[^.\n]{0,100}?(?:\(|\b)(\d{1,3})\)?\s*d[ií]as?\s*h[aá]biles",context,re.I)
+        explicit_days={int(x) for x in explicit}
+        if len(explicit_days)==1:
+            days=explicit_days.pop(); kind="Habiles"
         start=pd.to_datetime(notification,dayfirst=True,errors="coerce")
         if pd.isna(start) or not isinstance(days,int) or days<0 or kind not in {"Habiles","Calendario"}: return None
         if kind=="Calendario": return (start+timedelta(days=days)).strftime("%Y-%m-%d")
@@ -221,11 +269,31 @@ def calculate_due(notification: str, context: str) -> str | None:
 
 def ai_evaluate(payload: dict[str,Any]) -> dict[str,Any]:
     template="PLANTILLAS cumplimiento.docx" if payload["tipo_acto"]=="Resolución TRASU" else "PLANTILLAS DENUNCIAS ACTUALIZADAS.docx"
-    sources={"instrucciones":INSTRUCCIONES.read_text("utf-8",errors="ignore")[:50000],"plantilla":source_text(template),
-        "criterios":source_text("CRITERIOS DE EVALUACION DE CUMPLIMIENTO.xlsx"),"pautas_pas":source_text("PAUTAS PAS.xlsx")}
+    case_context=json.dumps(payload,ensure_ascii=False)
+    sources=legal_sources(case_context,template)
+    extraction_schema={"acto":{"numero":"","fecha":"","mandato_textual":""},"obligaciones":[{"componente":"","periodo":"","plazo_expreso":"","prueba_exigible":""}],"medios_probatorios":[{"documento":"","fecha":"","hecho_acreditado":"","cita":"","estado":"ejecutado|programado|en_curso|no_acreditado"}],"matriz_cumplimiento":[{"componente":"","estado":"acreditado|parcial|no_acreditado","sustento":""}],"datos_no_identificados":[]}
+    extraction_system="""Actúa como extractor jurídico OSIPTEL. Separa hechos de conclusiones. Identifica todas las obligaciones, periodos, montos y condiciones del mandato. Para cada prueba distingue ejecución efectiva de solicitud, programación, caso abierto o gestión en curso. Una afirmación de la empresa no prueba por sí sola el hecho. Cita el documento que respalda cada dato. No evalúes todavía PAS ni subsanación. Devuelve JSON conforme al esquema."""
+    extraction=json.loads(gemini_text(extraction_system,json.dumps({"esquema":extraction_schema,"caso":payload},ensure_ascii=False),json_mode=True))
     schema={"ficha":{"expediente":"","empresa_operadora":"","usuario_abonado":"","servicio":"","tipo_acto":"","numero_acto":"","fecha_notificacion_emision":"","fecha_vencimiento":"","obligacion_principal":"","medios_probatorios":[]},"trazabilidad":[],"evaluacion_juridica":{"checklist":[],"sustento_breve":"","tipo_incumplimiento":""},"resultado":"Cumplió|Incumplió|Inejecutable","subsanacion_voluntaria":"aplica|no aplica|no corresponde","clasificacion":"PAS|NO PAS","parrafo_final":"","datos_pendientes":[]}
-    system="Eres analista jurídico de OSIPTEL. Usa SOLO la evidencia y fuentes entregadas. No inventes fechas, pruebas ni conclusiones. Lo faltante es 'No identificado' o 'Pendiente de verificación'. Devuelve JSON válido conforme al esquema."
-    user=json.dumps({"esquema":schema,"caso":payload,"fuentes":sources},ensure_ascii=False)
+    system="""Eres analista jurídico senior de OSIPTEL. Usa SOLO la evidencia y fuentes entregadas y respeta literalmente la plantilla aplicable. No inventes fechas, pruebas ni conclusiones. Lo faltante es 'No identificado' o 'Pendiente de verificación'.
+
+MÉTODO Y CONTROLES JURÍDICOS OBLIGATORIOS (en este orden):
+0. Determina la materia y cita en el checklist las filas concretas de criterios y pautas usadas. No uses una regla de otra materia.
+1. Evalúa cada componente y cada periodo del mandato. El cumplimiento parcial NO equivale a cumplimiento íntegro.
+2. Una solicitud, programación, ticket, caso abierto, gestión en curso o comunicación interna sobre una ejecución futura NO acredita ejecución efectiva. Exige nota de crédito, recibo ajustado, histórico aplicado u otra constancia objetiva.
+3. Si falta prueba de uno o más meses ordenados, concluye que no se acreditó la ejecución íntegra.
+4. La subsanación voluntaria exige conjuntamente cese TOTAL de la conducta y reversión INTEGRAL de todos sus efectos antes del procedimiento. Que la materia no restrinja el servicio, por sí solo, jamás basta.
+5. Si siguen periodos, montos o componentes pendientes, establece 'no aplica' para el eximente y explica la ausencia de cese total/reversión integral.
+6. Usa exclusivamente la fecha de vencimiento calculada y no la recalcules.
+7. Aplica las instrucciones, criterios y pautas PAS entregados, incluso si contradicen una inferencia general del modelo. La plantilla determina la estructura de redacción.
+8. Contrasta obligación por obligación con la matriz de pruebas; no generalices el resultado de un componente a los demás.
+9. Mantén separadas tres decisiones: (a) cumplimiento material dentro del plazo, (b) razonabilidad para una ejecución tardía y (c) eximente de subsanación voluntaria. No conviertas automáticamente una ejecución tardía en subsanación.
+10. En descuentos por varios meses, las notas de crédito o recibos solo acreditan los periodos que identifican. Para meses futuros exige un medio que muestre el REGISTRO Y ACTIVACIÓN efectivos de esos descuentos y su periodo. Una carta que diga que se gestionó o programó no los acredita.
+11. La etiqueta NO PAS de una fila solo procede si todos los hechos descritos en esa fila están acreditados. Si faltan meses, extremos o prueba objetiva, aplica la fila específica de incumplimiento/PAS.
+12. Antes de redactar, construye el checklist con: mandato; plazo; prueba exigible; prueba existente; periodos acreditados; periodos pendientes; regla aplicada; conclusión. Si existe contradicción, prevalece la evidencia documental y la regla específica.
+
+Devuelve JSON válido conforme al esquema y un párrafo final completo, cronológico, con obligación, pruebas por periodo, contraste, conclusión y análisis separado de subsanación."""
+    user=json.dumps({"esquema":schema,"caso":{k:v for k,v in payload.items() if k!="documentos"},"extraccion_probatoria":extraction,"fuentes":sources},ensure_ascii=False)
     return json.loads(gemini_text(system,user,json_mode=True))
 
 def regenerate_paragraph(result: dict[str,Any]) -> str:
@@ -272,6 +340,14 @@ if analyze:
                 for u in uploads:
                     p=case_dir/safe_name(u.name); p.write_bytes(u.getbuffer()); paths.append(p)
                 paths+=extract_archives(case_dir)
+                unique_paths=[]; seen_hashes=set()
+                for p in paths:
+                    if p.suffix.lower() in {".zip",".rar",".7z"}: continue
+                    try: digest=hashlib.sha256(p.read_bytes()).hexdigest()
+                    except Exception: digest=str(p.resolve())
+                    if digest not in seen_hashes:
+                        seen_hashes.add(digest); unique_paths.append(p)
+                paths=unique_paths
                 texts={p.name:read_file(p) for p in paths if p.suffix.lower() not in {".zip",".rar",".7z"}}
                 combined="\n\n".join(f"### {n}\n{t}" for n,t in texts.items())
                 document_types=[classify(n,t) for n,t in texts.items()]; tipo=next((x for x in document_types if x!="No identificado"),"No identificado")
