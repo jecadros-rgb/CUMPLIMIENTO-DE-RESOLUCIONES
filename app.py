@@ -181,26 +181,40 @@ def parse_trasu_name(names: str) -> str | None:
 def source_text(name: str, limit=50000) -> str:
     return read_file(FUENTES/name)[:limit]
 
-def calculate_due(notification: str, context: str) -> str | None:
-    """Extract explicit calculator inputs, then reproduce Calculadora libre exactly."""
+def calculate_due(notification: str, context: str) -> tuple[str | None, str | None]:
+    """Extract explicit calculator inputs, then reproduce Calculadora libre exactly.
+
+    Returns (fecha_vencimiento, motivo_error). motivo_error is set whenever the
+    calculation could not be completed, so the UI can explain the real cause
+    instead of a generic message.
+    """
     key=get_api_key()
-    if not key: return None
+    if not key: return None,"no hay una clave de OpenAI configurada"
     try:
         r=OpenAI(api_key=key).responses.create(model=os.getenv("OPENAI_MODEL","gpt-4.1-mini"),input=[
             {"role":"system","content":"Extrae SOLO datos expresos de la resolución para usar la pestaña Calculadora libre. Devuelve JSON: {numero_dias: integer|null, tipo_dias: 'Habiles'|'Calendario'|null, ubicacion: 'Lima'|'Otra'|null, evidencia: string}. No infieras un plazo ausente."},
             {"role":"user","content":context[:60000]}],text={"format":{"type":"json_object"}})
+    except Exception as e:
+        return None,f"la IA no pudo procesar la solicitud ({e})"
+    try:
         params=json.loads(r.output_text)
-        days=params.get("numero_dias"); kind=params.get("tipo_dias"); location=params.get("ubicacion")
-        start=pd.to_datetime(notification,dayfirst=True,errors="coerce")
-        if pd.isna(start) or not isinstance(days,int) or days<0 or kind not in {"Habiles","Calendario"}: return None
-        if kind=="Calendario": return (start+timedelta(days=days)).strftime("%Y-%m-%d")
+    except Exception as e:
+        return None,f"la IA devolvió una respuesta no válida ({e})"
+    days=params.get("numero_dias"); kind=params.get("tipo_dias"); location=params.get("ubicacion")
+    if not isinstance(days,int) or days<0 or kind not in {"Habiles","Calendario"}:
+        return None,"no se identificó en la resolución un plazo expreso en días (hábiles o calendario)"
+    start=pd.to_datetime(notification,errors="coerce")
+    if pd.isna(start): return None,f"la fecha de notificación '{notification}' no se pudo interpretar"
+    if kind=="Calendario": return (start+timedelta(days=days)).strftime("%Y-%m-%d"),None
+    try:
         holidays_book=pd.read_excel(FUENTES/"CONTADOR DE PLAZOS - TRASU 2026.xlsx",sheet_name="No laborables (2)",header=None)
-        col=1 if location=="Lima" else 2
-        if col>=holidays_book.shape[1]: return None
-        holidays=pd.to_datetime(holidays_book.iloc[:,col],errors="coerce").dropna().dt.normalize().unique()
-        offset=pd.offsets.CustomBusinessDay(n=days,weekmask="Mon Tue Wed Thu Fri",holidays=list(holidays))
-        return (start.normalize()+offset).strftime("%Y-%m-%d")
-    except Exception: return None
+    except Exception as e:
+        return None,f"no se pudo leer la hoja 'No laborables (2)' de CONTADOR DE PLAZOS - TRASU 2026.xlsx ({e})"
+    col=1 if location=="Lima" else 2
+    if col>=holidays_book.shape[1]: return None,"CONTADOR DE PLAZOS - TRASU 2026.xlsx no tiene la columna de días no laborables esperada"
+    holidays=pd.to_datetime(holidays_book.iloc[:,col],errors="coerce").dropna().dt.normalize().unique()
+    offset=pd.offsets.CustomBusinessDay(n=days,weekmask="Mon Tue Wed Thu Fri",holidays=list(holidays))
+    return (start.normalize()+offset).strftime("%Y-%m-%d"),None
 
 def get_api_key() -> str | None:
     try: return st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
@@ -270,8 +284,8 @@ if analyze:
                     notice=exact_notification(expediente) if expediente!="No identificado" else None
                     if not notice: st.error("No se puede emitir evaluación final porque no se encontró coincidencia exacta del expediente en notificaciones mayo.xlsx")
                     else:
-                        due=calculate_due(notice,combined)
-                        if not due: st.error("No se puede emitir evaluación final porque no se pudo calcular el vencimiento con CONTADOR DE PLAZOS - TRASU 2026.xlsx")
+                        due,due_error=calculate_due(notice,combined)
+                        if not due: st.error(f"No se puede emitir evaluación final porque no se pudo calcular el vencimiento con CONTADOR DE PLAZOS - TRASU 2026.xlsx: {due_error}")
                 if tipo!="Resolución TRASU" or (notice and due):
                     payload={"tipo_acto":tipo,"expediente_detectado":expediente,"fecha_verificada":notice or "No identificado","fecha_vencimiento":due or "Pendiente de verificación","documentos":texts}
                     st.session_state.result=ai_evaluate(payload); st.session_state.texts=texts
