@@ -250,6 +250,15 @@ def calculate_due(notification: str, context: str) -> str | None:
         raw=gemini_text("Extrae SOLO el plazo de cumplimiento otorgado a la empresa en la parte resolutiva, no otros plazos mencionados. Devuelve JSON: {numero_dias: integer|null, tipo_dias: 'Habiles'|'Calendario'|null, ubicacion: 'Lima'|'Otra'|null, evidencia: cita breve}. El numero debe aparecer expresamente en la evidencia; no lo infieras.",context[:60000],json_mode=True)
         params=json.loads(raw)
         days=params.get("numero_dias"); kind=params.get("tipo_dias"); location=params.get("ubicacion")
+        normalized=unicodedata.normalize("NFD",context.lower())
+        normalized="".join(c for c in normalized if unicodedata.category(c)!="Mn")
+        recurring_discount=("descuento" in normalized and any(k in normalized for k in (
+            "descuento recurrente","ajustes recurrentes","seis (6) meses","seis meses",
+            "periodo de seis","meses pendientes","meses restantes")))
+        # Criterios, fila 28: activar un descuento recurrente tiene 10 días hábiles.
+        # This legal rule prevails when the decision does not state a different explicit term.
+        if recurring_discount:
+            days=10; kind="Habiles"; location=location or "Lima"
         explicit=re.findall(r"(?:plazo|t[eé]rmino)[^.\n]{0,100}?(?:\(|\b)(\d{1,3})\)?\s*d[ií]as?\s*h[aá]biles",context,re.I)
         explicit_days={int(x) for x in explicit}
         if len(explicit_days)==1:
@@ -275,7 +284,16 @@ def ai_evaluate(payload: dict[str,Any]) -> dict[str,Any]:
     extraction_system="""Actúa como extractor jurídico OSIPTEL. Separa hechos de conclusiones. Identifica todas las obligaciones, periodos, montos y condiciones del mandato. Para cada prueba distingue ejecución efectiva de solicitud, programación, caso abierto o gestión en curso. Una afirmación de la empresa no prueba por sí sola el hecho. Cita el documento que respalda cada dato. No evalúes todavía PAS ni subsanación. Devuelve JSON conforme al esquema."""
     extraction=json.loads(gemini_text(extraction_system,json.dumps({"esquema":extraction_schema,"caso":payload},ensure_ascii=False),json_mode=True))
     schema={"ficha":{"expediente":"","empresa_operadora":"","usuario_abonado":"","servicio":"","tipo_acto":"","numero_acto":"","fecha_notificacion_emision":"","fecha_vencimiento":"","obligacion_principal":"","medios_probatorios":[]},"trazabilidad":[],"evaluacion_juridica":{"checklist":[],"sustento_breve":"","tipo_incumplimiento":""},"resultado":"Cumplió|Incumplió|Inejecutable","subsanacion_voluntaria":"aplica|no aplica|no corresponde","clasificacion":"PAS|NO PAS","parrafo_final":"","datos_pendientes":[]}
-    system="""Eres analista jurídico senior de OSIPTEL. Usa SOLO la evidencia y fuentes entregadas y respeta literalmente la plantilla aplicable. No inventes fechas, pruebas ni conclusiones. Lo faltante es 'No identificado' o 'Pendiente de verificación'.
+    system="""Eres analista jurídico senior de OSIPTEL. Usa SOLO la evidencia y fuentes entregadas. No inventes fechas, pruebas ni conclusiones. Lo faltante es 'No identificado' o 'Pendiente de verificación'.
+
+JERARQUÍA DOCUMENTAL OBLIGATORIA:
+1. Sigue literalmente instrucciones_juridicas.txt para determinar el tipo de acto, el orden del análisis, la prueba exigible y los datos que no pueden inferirse.
+2. Aplica como reglas vinculantes las filas seleccionadas de CRITERIOS DE EVALUACION DE CUMPLIMIENTO.xlsx. No son simples referencias ni ejemplos.
+3. Aplica como reglas vinculantes las filas seleccionadas de PAUTAS PAS.xlsx, separando cumplimiento, razonabilidad, cese y subsanación voluntaria.
+4. Redacta con la estructura y lenguaje de PLANTILLAS cumplimiento.docx cuando sea una Resolución TRASU.
+5. Redacta con la estructura y lenguaje de PLANTILLAS DENUNCIAS ACTUALIZADAS.docx para cartas, denuncias, SAR, SARA o SAP.
+6. Antes de concluir, identifica en el checklist el nombre del archivo y la fila o sección aplicada. Si no puedes identificar la regla utilizada, no emitas evaluación final y registra el dato como pendiente.
+7. Está prohibido emitir una conclusión basada solamente en conocimiento general del modelo cuando contradiga cualquiera de esos documentos.
 
 MÉTODO Y CONTROLES JURÍDICOS OBLIGATORIOS (en este orden):
 0. Determina la materia y cita en el checklist las filas concretas de criterios y pautas usadas. No uses una regla de otra materia.
@@ -294,7 +312,35 @@ MÉTODO Y CONTROLES JURÍDICOS OBLIGATORIOS (en este orden):
 
 Devuelve JSON válido conforme al esquema y un párrafo final completo, cronológico, con obligación, pruebas por periodo, contraste, conclusión y análisis separado de subsanación."""
     user=json.dumps({"esquema":schema,"caso":{k:v for k,v in payload.items() if k!="documentos"},"extraccion_probatoria":extraction,"fuentes":sources},ensure_ascii=False)
-    return json.loads(gemini_text(system,user,json_mode=True))
+    result=json.loads(gemini_text(system,user,json_mode=True))
+    # Verified spreadsheet values are authoritative; the model cannot recalculate them.
+    result.setdefault("ficha",{})["expediente"]=payload.get("expediente_detectado","No identificado")
+    result["ficha"]["fecha_notificacion_emision"]=payload.get("fecha_verificada","No identificado")
+    result["ficha"]["fecha_vencimiento"]=payload.get("fecha_vencimiento","Pendiente de verificación")
+    # Deterministic legal guard: pending/programmed work is not full execution.
+    statuses={str(x.get("estado","")).lower() for x in extraction.get("medios_probatorios",[]) if isinstance(x,dict)}
+    matrix={str(x.get("estado","")).lower() for x in extraction.get("matriz_cumplimiento",[]) if isinstance(x,dict)}
+    incomplete=bool(statuses & {"programado","en_curso","no_acreditado"} or matrix & {"parcial","no_acreditado"})
+    if incomplete:
+        result["resultado"]="Incumplió"
+        result["subsanacion_voluntaria"]="no aplica"
+        result["clasificacion"]="PAS"
+        result.setdefault("evaluacion_juridica",{}).setdefault("checklist",[]).append(
+            "Regla obligatoria: existen periodos programados, en curso o no acreditados; no hubo ejecución íntegra, cese total ni reversión integral.")
+        locked={
+            "ficha":result.get("ficha",{}),"extraccion_probatoria":extraction,
+            "resultado_obligatorio":"Incumplió","subsanacion_obligatoria":"no aplica",
+            "clasificacion_obligatoria":"PAS","fuentes_aplicables":sources,
+        }
+        rewrite_system="""Redacta un único párrafo jurídico conforme a la plantilla TRASU. Las conclusiones indicadas como obligatorias están bloqueadas y no puedes modificarlas. No afirmes que una programación, solicitud, carta o gestión en curso acredita ejecución. Explica que, al quedar periodos sin prueba de registro y activación efectiva, no hubo ejecución íntegra, cese total ni reversión integral. No apliques el eximente por el solo hecho de que no exista restricción del servicio. Usa exclusivamente la fecha de vencimiento de la ficha. Devuelve JSON {parrafo_final:string}."""
+        rewritten=json.loads(gemini_text(rewrite_system,json.dumps(locked,ensure_ascii=False),json_mode=True))
+        result["parrafo_final"]=rewritten.get("parrafo_final",result.get("parrafo_final",""))
+    # Avoid an accidental exact duplication of the generated paragraph.
+    paragraph=str(result.get("parrafo_final","")).strip()
+    half=len(paragraph)//2
+    if len(paragraph)%2==0 and paragraph[:half]==paragraph[half:]:
+        result["parrafo_final"]=paragraph[:half].strip()
+    return result
 
 def regenerate_paragraph(result: dict[str,Any]) -> str:
     context={"ficha":result.get("ficha",{}),"evaluacion_juridica":result.get("evaluacion_juridica",{}),"resultado":result.get("resultado"),"subsanacion_voluntaria":result.get("subsanacion_voluntaria"),"clasificacion":result.get("clasificacion"),"datos_pendientes":result.get("datos_pendientes",[]),"instrucciones":INSTRUCCIONES.read_text("utf-8",errors="ignore")[:40000]}
