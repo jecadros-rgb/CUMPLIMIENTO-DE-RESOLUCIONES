@@ -135,7 +135,7 @@ def vision_ocr(path: Path) -> str:
             buf=io.BytesIO(); image.save(buf,format="JPEG",quality=85)
             parts.append(types.Part.from_bytes(data=buf.getvalue(),mime_type="image/jpeg"))
         response=get_client(get_api_key()).models.generate_content(
-            model=os.getenv("GEMINI_MODEL","gemini-2.0-flash"),contents=parts)
+            model=os.getenv("GEMINI_MODEL","gemini-2.5-flash"),contents=parts)
         return response.text
     except Exception as e:
         return f"[OCR no disponible para {path.name}: {e}]"
@@ -191,7 +191,7 @@ def calculate_due(notification: str, context: str) -> tuple[str | None, str | No
     if not key: return None,"no hay una clave de Gemini configurada"
     try:
         r=get_client(key).models.generate_content(
-            model=os.getenv("GEMINI_MODEL","gemini-2.0-flash"),
+            model=os.getenv("GEMINI_MODEL","gemini-2.5-flash"),
             contents=context[:60000],
             config=types.GenerateContentConfig(
                 system_instruction="Extrae SOLO datos expresos de la resolución para usar la pestaña Calculadora libre. Devuelve JSON: {numero_dias: integer|null, tipo_dias: 'Habiles'|'Calendario'|null, ubicacion: 'Lima'|'Otra'|null, evidencia: string}. No infieras un plazo ausente.",
@@ -235,14 +235,14 @@ def ai_evaluate(payload: dict[str,Any]) -> dict[str,Any]:
     system="Eres analista jurídico de OSIPTEL. Usa SOLO la evidencia y fuentes entregadas. No inventes fechas, pruebas ni conclusiones. Lo faltante es 'No identificado' o 'Pendiente de verificación'. Devuelve JSON válido conforme al esquema."
     user=json.dumps({"esquema":schema,"caso":payload,"fuentes":sources},ensure_ascii=False)
     r=get_client(get_api_key()).models.generate_content(
-        model=os.getenv("GEMINI_MODEL","gemini-2.0-flash"),contents=user,
+        model=os.getenv("GEMINI_MODEL","gemini-2.5-flash"),contents=user,
         config=types.GenerateContentConfig(system_instruction=system,response_mime_type="application/json"))
     return json.loads(r.text)
 
 def regenerate_paragraph(result: dict[str,Any]) -> str:
     context={"ficha":result.get("ficha",{}),"evaluacion_juridica":result.get("evaluacion_juridica",{}),"resultado":result.get("resultado"),"subsanacion_voluntaria":result.get("subsanacion_voluntaria"),"clasificacion":result.get("clasificacion"),"datos_pendientes":result.get("datos_pendientes",[]),"instrucciones":INSTRUCCIONES.read_text("utf-8",errors="ignore")[:40000]}
     response=get_client(get_api_key()).models.generate_content(
-        model=os.getenv("GEMINI_MODEL","gemini-2.0-flash"),contents=json.dumps(context,ensure_ascii=False),
+        model=os.getenv("GEMINI_MODEL","gemini-2.5-flash"),contents=json.dumps(context,ensure_ascii=False),
         config=types.GenerateContentConfig(system_instruction="Regenera únicamente el párrafo jurídico final con los datos aportados. No inventes ni completes faltantes. Devuelve JSON {parrafo_final:string}.",response_mime_type="application/json"))
     return json.loads(response.text)["parrafo_final"]
 

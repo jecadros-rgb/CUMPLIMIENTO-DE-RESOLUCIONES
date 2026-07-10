@@ -38,7 +38,7 @@ En casos TRASU, la búsqueda en `NRO_EXPEDIENTE` es exacta y solo se toma `FEC_N
 
 ```toml
 GOOGLE_API_KEY = "su-clave"
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-2.5-flash"
 ```
 
 4. Despliegue la app y comparta el enlace generado. Para expedientes confidenciales se recomienda infraestructura privada, control de acceso y una política de retención; un enlace público no es apropiado.
