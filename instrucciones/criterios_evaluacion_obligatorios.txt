@@ -1,0 +1,121 @@
+CRITERIOS DE EVALUACIÓN DE CUMPLIMIENTO — INSTRUCCIÓN OBLIGATORIA
+
+Las reglas siguientes provienen literalmente de la matriz institucional.
+Deben aplicarse según la materia y los hechos acreditados. PAS, NO PAS, PLAZO e INEJECUTABLE conservan el significado consignado en la matriz.
+No se permite sustituirlas por conocimiento general del modelo ni omitir una regla aplicable.
+
+=== HOJA: Criterios ===
+FILA 2: MATERIA | CRITERIO | PAS/NO PAS
+FILA 3: Facturación y cobro | Existe captura de pantalla del sistema o histórico de estado de cuenta en donde se advierten ajustes que coinciden que los importes ordenados por el TRASU | NO PAS
+FILA 4: Existe captura de pantalla del sistema o histórico de estado de cuenta en donde se advierten ajustes que coinciden que los importes ordenados por el TRASU, pero no con los reclamados por el usuario en el formulario de reclamo o denuncia | NO PAS
+FILA 5: Existe captura de pantalla del sistema o histórico de estado de cuenta en donde se advierten ajustes que coinciden que los importes ordenados por el TRASU, sin embargo dichos ajustes son posteriores al plazo maximo de cumplimiento | NO PAS
+FILA 6: Existe captura de pantalla del sistema o histórico de estado de cuenta en donde se advierten ajustes que coinciden que los importes ordenados por el TRASU, sin embargo dichos ajustes son posteriores al plazo maximo de cumplimiento | NO PAS
+FILA 7: Calidad e idoneidad | Existe acta o constancia de visita técnica ejecutada dentro del plazo máximo para cumplir y conformidad del usuario o representante con firma. | NO PAS
+FILA 8: Existen anotaciones del usuario en el acta o constancia de visita técnica no atendidas por la empresa operadora. | PAS
+FILA 9: Existe acta o constancia de visita técnica ejecutada dentro del plazo, sin embargo, el usuario, mediante informaciones adicionales ha contradicho la atención con medios probatorios Asimismo, la empresa operadora no ha gestionado acciones adicionales. | PAS
+FILA 10: Existe acta o constancia de visita técnica ejecutada dentro del plazo, sin embargo, el usuario, mediante informaciones adicionales ha contradicho la atención sin remitir medios probatorios. | NO PAS
+FILA 11: Obra el acta o constancia de visita técnica que no registra fecha o es ilegible | PAS
+FILA 12: Existe solo Reporte CDR y mensaje a casilla de voz | PAS
+FILA 13: Existe audio de comunicación con el usuario para coordinar las pruebas de operatividad dentro del plazo máximo para cumplir y el usuario no brinda facilidades | NO PAS
+FILA 14: Existe audio de comunicación con el usuario que confirma la operatividad del servicio dentro del plazo máximo para cumplir | NO PAS
+FILA 15: Existe audio de comunicación con el usuario que confirma la operatividad del servicio fuera del plazo máximo para cumplir | PAS
+FILA 16: Existe correo electrónico al usuario (registrado en procedimiento de reclamo) con acuse dentro del plazo | NO PAS
+FILA 17: Existe Reporte CDR y correo electrónico al usuario (registrado en procedimiento de reclamo) con acuse dentro del plazo. | NO PAS
+FILA 18: Existe correo electrónico al usuario (registrado en procedimiento de reclamo) fuera del plazo máximo para cumplir. | PAS
+FILA 19: No existen medios probatorios idoneos que acrediten la falta de facilidades técnicas para la atención de la avería (informe técnico) | PAS
+FILA 20: La empresa operadora dentro del plazo máximo para cumplir alega que no es posible la atención de la avería del servicio por la falta de facilidades técnicas y solo remite printer de su sistema, foto de mapa de dirección, entre otros. | PAS
+FILA 21: No existen o existen medios probatorios que acrediten la troba saturada para la atención de la avería | PAS
+FILA 22: La empresa operadora alega que la falta de servicio se debe a un incidente de robo de cable multipar de cobre en el área, adjuntando un informe técnico de planta externa en el cual se indica que la avería fue detectada con posterioridad al plazo de cumplimiento. | PAS
+FILA 23: La empresa operadora alega que la falta de servicio se debe a un incidente de robo de cable multipar de cobre en el área, adjuntando un informe técnico de planta externa en el cual se indica que la avería fue detectada dentro del plazo máximo de cumplimiento; sin embargo, al ser una declaración de parte no genera certeza sobre la causa de interrupción (como lo sería la constatación por alguna autoridad) ni acompaña un cronograma y plan de trabajo para reparar y reponer el servicio. | PAS | Memo 068-DFI-2020
+Memo 141-DFI-2021
+Memo 181-DFI-2021
+FILA 24: La empresa operadora alega que no puede solucionar la avería, debido a que el servicio se encuentra instalado en la tecnología ADSL y la zona se encuentra saturada/bloqueada para migrar a la tecnología FTTH (GPON) o fibra óptica; sin embargo, no precisa ni acredita el elemento de red que se encontraría bloqueado, a fin de establecer si tiene o no la obligación de contar con un  sistema de respaldo ante este tipo de contingencias. Además, la empresa operadora tiene el deber de solucionar la avería utilizando la tecnología que tenga disponible. | PAS | Memo 506-2025-DFI/OSIPTEL
+FILA 25: Incumplimiento de condiciones contractuales, ofertas y promociones | Existe Constancia de Asignación de Saldo o Histórico de pedidos, en donde se verifica aplicación de oferta o promoción en el plazo legal. | NO PAS
+FILA 26: Existe Constancia de Asignación de Saldo o Histórico de pedidos, en donde se verifica aplicación de oferta o promoción posterior al plazo legal. | NO PAS
+FILA 27: Existe Constancia de Asignación de Saldo o Histórico de pedidos, en donde se verifica aplicación de oferta o promoción posterior al plazo legal | NO PAS
+FILA 28: Se advierte que el mandato consiste en la activación de un descuento recurrente (oferta o promoción) o la activación de un beneficio, se tomará en cuenta el plazo de diez (10) días hábiles. Sin embargo, sí se aprecia que el mandato consiste en ajustar o devolver un determinado importes, se tomará en cuenta el plazo de un (1) mes. | PLAZO
+FILA 29: Se advierte que la empresa operadora ha alegado que el plan tarifario, oferta o promoción no se encuentra vigente. Sin embargo, dicho cese no se encuentra consignado en el SIRT. | PAS
+FILA 30: Se advierte que la empresa operadora ha alegado que el plan tarifario, oferta o promoción no se encuentra vigente. Asimismo, dicho cese se encuentra consignado en el SIRT. Sin embargo, la empresa operadora ha ofrecido un plan tarifario similar fuera del plazo otorgado por el Trasu. (Tomando en cuenta la fecha de comunicación telefónica atendida por el usuario o correo electrónico de ofrecimiento). | PAS
+FILA 31: En el caso de aplicación de ajustes o descuentos por un periodo de meses, respecto del ajuste por los meses pendientes o futuros, la empresa debe remitir un medio de prueba en el que se verifique el registro y activación de los descuentos por los meses restantes o futuros. | PAS
+FILA 32: En caso que se brinde la posibilidad de devolver el equipo a efecto de resolver el contrato y ajustar lo facturado o devolver los importes pagados, sí la empresa operadora ha ejecutado acciones en el plazo y se advierte inatención por parte del usuario. Sin embargo, pasado el plazo, denuncia el incumplimiento. | NO PAS
+FILA 33: Corte o Baja Injustificada | Existe acta o constancia de visita técnica ejecutada dentro del plazo | NO PAS
+FILA 34: Existen anotaciones del usuario en el acta o constancia de visita técnica no atendidas por la empresa operadora. | PAS
+FILA 35: Existe acta o constancia de visita técnica ejecutada dentro del plazo, sin embargo, el usuario, mediante informaciones adicionales ha contradicho la atención con medios probatorios Asimismo, la empresa operadora no ha gestionado acciones adicionales. | PAS
+FILA 36: Existe acta o constancia de visita técnica ejecutada dentro del plazo, sin embargo, el usuario, mediante informaciones adicionales ha contradicho la atención sin remitir medios probatorios. | NO PAS
+FILA 37: Existe Reporte CDR y correo electrónico al usuario dentro del plazo, sin embargo usuario no contesta dichas llamadas y correo. | NO PAS
+FILA 38: Existe Reporte CDR dentro del plazo y correo electrónico al usuario fuera del plazo, sin embargo usuario no contesta dichas llamadas y correo. | PAS
+FILA 39: No existen medios probatorios que acrediten la falta de facilidades técnicas para la reactivación del servicio. | PAS
+FILA 40: No existen o existen medios probatorios que acrediten la troba saturada para la atención de la reactivación del servicio. | PAS
+FILA 41: Instalación, activación o traslado del servicio | Existe acta o constancia de visita técnica ejecutada dentro del plazo | NO PAS
+FILA 42: Existen anotaciones del usuario en el acta o constancia de visita técnica no atendidas por la empresa operadora. | PAS
+FILA 43: Existe acta o constancia de visita técnica ejecutada dentro del plazo, sin embargo, el usuario, mediante informaciones adicionales ha contradicho la atención con medios probatorios Asimismo, la empresa operadora no ha gestionado acciones adicionales. | PAS
+FILA 44: Existe acta o constancia de visita técnica ejecutada dentro del plazo, sin embargo, el usuario, mediante informaciones adicionales ha contradicho la atención sin remitir medios probatorios. | NO PAS
+FILA 45: Existe Reporte CDR y correo electrónico al usuario dentro del plazo, sin embargo usuario no contesta dichas llamadas y correo. | NO PAS
+FILA 46: Existe Reporte CDR dentro del plazo y correo electrónico al usuario fuera del plazo, sin embargo usuario no contesta dichas llamadas y correo. | PAS
+FILA 47: No existen medios probatorios que acrediten la falta de facilidades técnicas para la reactivación del servicio. | PAS
+FILA 48: No existen o existen medios probatorios que acrediten la troba saturada para la atención de la reactivación o traslado del servicio. | PAS
+FILA 49: Falta de ejecución de baja o traslado del servicio | Existe consulta de estado del servcio que acredite la baja del servicio (verificar fecha de ejecución, sí carece tomar en cuenta fecha de remisión de medios probatorio), advirtiendose que la baja se dio en el plazo. | NO PAS
+FILA 50: Se advierte que el mandato consiste en la baja de un servicio, se tomará en cuenta el plazo de diez (10) días hábiles. Por otro lado, sí se aprecia que el mandato consiste en ajustar o devolver un determinado importe, se tomará en cuenta el plazo de un (1) mes. | PLAZO
+FILA 51: Recargas | Existe captura de pantalla del sistema, constancia de asignación de saldo, detalle de consumos o histórico de recargas  en donde se advierten el saldo que coincide con el importe ordenado por el TRASU | NO PAS
+FILA 52: Existe captura de pantalla del sistema, constancia de asignación de saldo, detalle de consumos o histórico de recargas en donde se advierten el saldo que coincide con el importe ordenado por el TRASU, pero no con los reclamados por el usuario en el formulario de reclamo o denuncia | NO PAS
+FILA 53: Existe captura de pantalla del sistema, constancia de asignación de saldo, detalle de consumos o histórico de recargas, sin embargo dichos ajustes son posteriores al plazo maximo de cumplimiento y la carta de requerimiento de cumplimiento (Denuncias) | PAS
+FILA 54: Existe captura de pantalla del sistema, constancia de asignación de saldo, detalle de consumos o histórico de recargas, sin embargo dichos ajustes son posteriores al plazo maximo de cumplimiento, empero, anteriores a la  carta de requerimiento de cumplimiento (Denuncias) | NO PAS
+FILA 55: Contratación no solicitada | Existe consulta de estado del servcio que acredite la baja del servicio (verificar fecha de ejecución, sí carece tomar en cuenta fecha de remisión de medios probatorio), advirtiendose que la baja se dio en el plazo. | NO PAS
+FILA 56: Se advierte que el mandato consiste en la baja de un servicio, se tomará en cuenta el plazo de diez (10) días hábiles. Por otro lado, sí se aprecia que el mandato consiste en ajustar o devolver un determinado importe, se tomará en cuenta el plazo de un (1) mes. | PLAZO
+FILA 57: Migración | Existe Constancia de Estado del servicio o Histórico de pedidos, en donde se verifica aplicación del plan ordenado en el plazo legal. | NO PAS
+FILA 58: Existe Constancia de Estado del servicio o Histórico de pedidos, en donde se verifica aplicación del plan ordenado en el plazo legal. Pero antes de carta de requerimiento de cumplimiento. | NO PAS
+FILA 59: Existe Constancia de Estado del servicio o Histórico de pedidos, en donde se verifica aplicación de oferta o promoción posterior al plazo legal y a la carta de requerimiento de cumplimiento. | PAS
+FILA 60: Se advierte que el mandato consiste en la migración del servicio, se tomará en cuenta el plazo de diez (10) días hábiles. Sin embargo, sí se aprecia que el mandato consiste en ajustar o devolver un determinado importes, se tomará en cuenta el plazo de un (1) mes. | PLAZO
+FILA 61: Se advierte que la empresa operadora ha alegado que el plan tarifario no se encuentra vigente. Sin embargo, dicho cese no se encuentra consignado en el SIRT. | PAS
+FILA 62: Se advierte que la empresa operadora ha alegado que el plan tarifario, oferta o promoción no se encuentra vigente. Asimismo, dicho cese se encuentra consignado en el SIRT. Sin embargo, la empresa operadora ha ofrecido un plan tarifario similar fuera del plazo otorgado por el Trasu. (Tomando en cuenta la fecha de comunicación telefónica atendida por el usuario o correo electrónico de ofrecimiento). | PAS
+FILA 63: Portabilidad | Existe Solicitud de Portabilidad ejecutada dentro del plazo. | NO PAS
+FILA 64: Se advierte que el mandato consiste en la portabilidad del servicio, se tomará en cuenta el plazo de un (1) día hábil. Sin embargo, sí se aprecia que el mandato consiste en ajustar o devolver un determinado importes, se tomará en cuenta el plazo de un (1) mes. | PLAZO
+FILA 65: Todas las materias | Se advierte que la empresa cumplió con el mandato de la resolución con fecha posterior al requerimiento de la carta comunicada por DAPU a la empresa operadora respecto de la denuncia presentada por el usuario. | PAS
+FILA 66: Notificaciones | Si la notificación se realiza un día inhabil (sabado, domingo, feriado calendario o día no laborable para el sector público) se entiende efectuada el primer día habíl siguiente.  Si el plazo de incumplimiento cae en un dia inhabil se entiende notificado el día hábil siguiente.
+FILA 67: Todas las materias | Si la empresa operadora acredita el cumplimiento relacionado a la pretensión del usuario, pese a que no elevó los medios de prueba indicados en la Resolución como necesarios para acreditar el cumplimiento, será NO PAS, pues lo importante es acreditar el cumplimiento vinculado a la pretensión del usuario. | NO PAS
+FILA 68: Suspensión por uso prohibido | La empresa operadora señala que no es posible la reactivación del servicio suspendido por uso prohibido, en el plazo establecido, debido a que el RENTESEG ordenó un nuevo bloqueo y, habiendo el analista STSR realizado las consultas con el personal del RENTESEG, se advierte que el IMEI del equipo no ésta reportado exclusivamente como uso prohibido sino que cuenta con otro bloqueo por otro motivo diferente. | INEJECUTABLE
+FILA 69: Activación de promoción | La empresa puede acreditar la activación de la promoción con una captura de imagen de sus sistemas donde se observe el registro de la promoción, de tal manera que se pueda verificar la condición (1000 MBPS, LLAMADAS ILIMITADAS) y el periodo de activación. En caso no se cuente con ello, hay infracción. | PAS
+FILA 70: Activación de promoción | Si la empresa cuenta con  la activación  en sus sistemas, pero el usuario indica que no recibe la totalidad del beneficio, corresponderá a la empresa remitir un medio de prueba adicional, de lo contrario será infracción. Ejemplo: Se debe otorgar 1000 mbps y el usuario indica que se le otorga una velocidad menor, entonces se debe acreditar que si brinda dicha velocidad, otro ejemplo es que se registra la promoción descuento del 50% y el usuario eleva recibos donde se aprecia que el descuento no es aplicado. | PAS
+FILA 71: Devoluciones en Centros de Atención de la empresa Operadora | Requerimientos STSR
+STSR- Hace requerimientos en todos los casos de denuncias cuando: 
+(i) Usuario alega negativa a devolución, 
+(ii) Empresa remite nueva comunicación con lugar/fecha/importe/requisitos para la devolución, pero no informa resultados. | DENUNCIAS - REQUERIMIENTOS
+FILA 72: MEDIOS PARA INFORMAR SOBRE DEVOLUCIÓN:
+1. Comunicación telefónica efectiva (Se contacta y se traslada la información) 
+2. Medios escritos: 
+A. Carta o comunicación por escrito o por correo electrónico. 
+B. Mensaje de texto. (Texto de mensaje, constancia de envío, constancia de recepción)
+C. Mensaje vía Whatsapp. (Pendiente evaluar casuística, en principio debe visualizarse texto, número del usuario y fecha) | MP
+FILA 73: SUPUESTO 1: El usuario es genérico (NO ALEGA que fue a recoger devolución) y la empresa remite en plazo SMS (envío y constancia de recepción)/carta/llamada efectiva en que informó al usuario el lugar, importe y fechas en que puede recoger el importe ordenado. CONCLUSIÓN: Cumplió. | NO PAS
+FILA 74: SUPUESTO 2. El usuario SÍ ALEGA que fue al Centro de atención y hubo negativa de  devolución, con posterioridad al plazo la empresa remite SMS/CARTA/LLAMADA EFECTIVA en que informó al usuario el lugar, importe y fechas en que puede recoger el importe ordenado. 
+Si la empresa no acredita devolución o, en su defecto, no remite un "Historial de Atenciones" o "Historial de Interacciones" 
+CONCLUSIÓN: Incumplió - NO SUBSANÓ
+* El presente razonamiento se sustenta en que existe diferente casuística en que existió una primera negativa que se vuelve a presentar hasta una segunda o tercera vez, por lo que esta vez si se requiere un medio de prueba adicional. | PAS
+FILA 75: SUPUESTO 3. 
+(i) El usuario SÍ ALEGA que fue al Centro de atención, 
+(ii) Con posterioridad al plazo la empresa remite SMS/CARTA/LLAMADA EFECTIVA en que informó al usuario el lugar, importe y fechas en que puede recoger el importe ordenado. 
+(iii) Durante el trámite de la denuncia se presentan alguna de estas circunstancias: 
+- STSR hace nuevo requerimiento sobre los resultados de la última carta, o
+- Usuario alega que nuevamente hubo negativa
+* En ambos casos la empresa no remite Historial de Atenciones o no acredita devolución. 
+CONCLUSIÓN: Incumplió - No hubo cese - No subsanó. | PAS
+FILA 76: SUPUESTO 4. 
+(i) Usuario da su número de cuenta o yape para la devolución.
+(ii) Empresa acredita que informó al usuario para que recoja dinero en Centro de Atención y alega que el usuario no se apersonó. Empresa no acredita devolución.
+CONCLUSIÓN: Incumplió - No hubo cese - No subsanó. | PAS
+FILA 77: Portabilidad no autorizada | La resolución ordena que el supuesto Concesionario Receptor (Empresa A) retorne el número al Concesionario Cedente (Empresa B). 
+De no verificarse el retorno, se procede a solicitar al personal de la STSR con acceso al Sistema de Portabilidad que efectúe la consulta correspondiente.
+De la información obtenida, se advierte que el supuesto Concesionario Receptor (Empresa A) sí recibió el número, pero no como consecuencia de una portabilidad numérica previa (desconocida por el usuario), sino como resultado de la terminación del contrato de abonado en la Empresa B, conforme a lo previsto en el art. 31 del TUO del Reglamento de Portabilidad, lo cual aparece registrado  en el sistema con el detalle "Fin de servicio/Cambio de número". 
+En tal sentido, al no haberse configurado una portabilidad numérica no autorizada, no existe obligación de retorno del número para el supuesto Concesionario Receptor (Empresa A), siendo inejecutable la resolución. | INEJECUTABLE
+FILA 78: (i) Cambio de número no autorizado
+(ii) Ofertas y promociones
+(iii) Migración no atendida y migración no autorizada | Si la EO sostiene que, dentro del plazo otorgado para el cumplimiento, el servicio se encontraba suspendido por deuda y que, por tal motivo: (i) no pudo DEVOLVER el número al usuario (cambio de número no autorizado); o (ii) no pudo activar la promoción (ofertas y promociones); o (iii) no pudo ejecutar la migración (migración no atendida y migración no autorizada), corresponderá  desestimar dicho argumento en tanto la suspensión por deuda no constituye un hecho ajeno al ámbito de control de la EO, debido a que esta cuenta con la capacidad operativa para adoptar las medidas necesarias que permitan la ejecución de dichas obligaciones.
+
+*Dicho criterio NO APLICA PARA LOS CASOS DE CALIDAD, en la medida que la realización de pruebas implica mayor despliegue de tiempo y recursos. | PAS
+FILA 79: Cambio de número no autorizado | Si la EO alega que  "cambio de número" no constituye una materia reclamable conforme al TUO del Reglamento de Reclamos, corresponderá declarar la inejecutabilidad del mandato, debido a que el reclamo ha sido interpuesto contraviniendo lo señalado en dicha norma. | INEJECUTABLE
+FILA 80: Migración no atendida y migración no autorizada | Cuando la obligación consiste en migrar hacia un plan de menor costo y la empresa operadora, habiendo excedido el plazo de cumplimiento de diez (10) días hábiles, comunica válidamente al usuario que el plan tarifario solicitado no se encontraba vigente (y verificamos en el SIRT que la tarifa no está vigente), se configura el incumplimiento. 
+¿Aplica subsanación voluntaria?
+FILA 81: SI. Cuando la empresa acreditó el ajuste proporcional de la diferencia entre el plan facturado y el solicitado hasta la fecha en que comunicó la imposibilidad de migrar.
+Ejemplo: La empresa ajusta la diferencia facturada del recibo, y obra recibo o información que permite identificar el periodo facturado, con lo cual existe certeza de que el ajuste comprende hasta la fecha en que se comunicó la imposibilidad de migrar. | NO PAS
+FILA 82: NO. Cuando la empresa no acreditó el ajuste proporcional de la diferencia entre el plan facturado y el solicitado hasta la fecha de la comunicación de la imposibilidad de migrar.
+Ejemplo: La empresa ajusta la diferencia facturada del recibo; sin embargo, no obra el recibo ni información que permita identificar el periodo facturado, por lo que no existe certeza de que el ajuste comprende hasta la fecha en que se comunicó la imposibilidad de migrar. | PAS

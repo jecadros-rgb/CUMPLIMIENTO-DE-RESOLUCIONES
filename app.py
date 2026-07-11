@@ -24,6 +24,7 @@ from google.genai import types
 BASE = Path(__file__).resolve().parent
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
+CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
 TEMP = BASE / "expedientes_temporales"
 SALIDAS = BASE / "salidas"
 HISTORIAL = SALIDAS / "evaluaciones.xlsx"
@@ -32,7 +33,6 @@ FUENTES_REQUERIDAS = [
     "PLANTILLAS DENUNCIAS ACTUALIZADAS.docx",
     "notificaciones mayo.xlsx",
     "CONTADOR DE PLAZOS - TRASU 2026.xlsx",
-    "CRITERIOS DE EVALUACION DE CUMPLIMIENTO.xlsx",
     "PAUTAS PAS.xlsx",
 ]
 COLUMNAS = ["Expediente", "Empresa operadora", "Usuario o abonado", "Servicio",
@@ -92,6 +92,8 @@ def fuente_status() -> tuple[bool, list[str]]:
     if instrucciones_ok:
         instrucciones_ok = "PEGUE AQUÍ" not in INSTRUCCIONES.read_text("utf-8", errors="ignore")
     if not instrucciones_ok: faltan.append("instrucciones_juridicas.txt (contenido real)")
+    if not CRITERIOS_INSTRUCCION.is_file() or CRITERIOS_INSTRUCCION.stat().st_size < 500:
+        faltan.append("criterios_evaluacion_obligatorios.txt")
     return not faltan, faltan
 
 def safe_name(name: str) -> str:
@@ -251,9 +253,8 @@ def relevant_excel_rules(name: str, case_context: str, limit: int=28) -> str:
 def legal_sources(case_context: str, template: str) -> dict[str,str]:
     return {
         "instrucciones":INSTRUCCIONES.read_text("utf-8",errors="ignore"),
+        "criterios_evaluacion_instruccion_obligatoria":CRITERIOS_INSTRUCCION.read_text("utf-8",errors="ignore"),
         "plantilla_aplicable":source_text(template,80000),
-        "criterios_aplicables":relevant_excel_rules(
-            "CRITERIOS DE EVALUACION DE CUMPLIMIENTO.xlsx",case_context,34),
         "pautas_pas_aplicables":relevant_excel_rules("PAUTAS PAS.xlsx",case_context,26),
     }
 
@@ -336,7 +337,7 @@ No evalúes todavía PAS ni subsanación. Devuelve JSON conforme al esquema."""
 
 JERARQUÍA DOCUMENTAL OBLIGATORIA:
 1. Sigue literalmente instrucciones_juridicas.txt para determinar el tipo de acto, el orden del análisis, la prueba exigible y los datos que no pueden inferirse.
-2. Aplica como reglas vinculantes las filas seleccionadas de CRITERIOS DE EVALUACION DE CUMPLIMIENTO.xlsx. No son simples referencias ni ejemplos.
+2. Aplica íntegramente criterios_evaluacion_obligatorios.txt como una INSTRUCCIÓN vinculante. Sus filas proceden literalmente de CRITERIOS DE EVALUACION DE CUMPLIMIENTO.xlsx; no son simples referencias ni ejemplos. Debes conservar el significado de PAS, NO PAS, PLAZO e INEJECUTABLE indicado en cada fila.
 3. Aplica como reglas vinculantes las filas seleccionadas de PAUTAS PAS.xlsx, separando cumplimiento, razonabilidad, cese y subsanación voluntaria.
 4. Redacta con la estructura y lenguaje de PLANTILLAS cumplimiento.docx cuando sea una Resolución TRASU.
 5. Redacta con la estructura y lenguaje de PLANTILLAS DENUNCIAS ACTUALIZADAS.docx para cartas, denuncias, SAR, SARA o SAP.
@@ -445,7 +446,7 @@ with left:
             kind=classify(u.name,""); st.caption(f"✓ {u.name} · {kind}")
     ok_sources,missing=fuente_status()
     st.divider(); st.markdown('<div class="light">Fuentes permanentes</div>',unsafe_allow_html=True)
-    st.success("6 fuentes + instrucciones disponibles") if ok_sources else st.error(f"Faltan {len(missing)} fuentes")
+    st.success("Fuentes + instrucciones jurídicas y criterios obligatorios disponibles") if ok_sources else st.error(f"Faltan {len(missing)} fuentes o instrucciones")
     if missing:
         with st.expander("Ver faltantes"): st.write("\n".join(f"• {x}" for x in missing))
     analyze=st.button("✦ Analizar expediente con IA",type="primary",use_container_width=True,disabled=not uploads)
