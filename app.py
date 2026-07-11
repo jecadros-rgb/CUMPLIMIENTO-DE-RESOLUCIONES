@@ -173,6 +173,29 @@ def classify(name: str, text: str) -> str:
         if key in s: return label
     return "No identificado"
 
+def extract_resolutive_part(documents: dict[str,str]) -> str | None:
+    """Extract the operative section; obligations may not be inferred elsewhere."""
+    candidates=[]
+    for name,text in documents.items():
+        if classify(name,text)!="Resolución TRASU": continue
+        upper=unicodedata.normalize("NFD",text.upper())
+        upper="".join(c for c in upper if unicodedata.category(c)!="Mn")
+        anchors=[]
+        for pattern in (r"\bSE\s+RESUELVE\b",r"\bRESUELVE\s*:",r"\bPARTE\s+RESOLUTIVA\b"):
+            match=re.search(pattern,upper)
+            if match: anchors.append(match.start())
+        if anchors:
+            start=min(anchors); section=text[start:start+18000]
+            if re.search(r"DECLARAR\s+(?:EL\s+RECLAMO\s+)?FUNDAD",section,re.I):
+                candidates.append(f"### {name} — PARTE RESOLUTIVA\n{section}")
+            else:
+                candidates.append(f"### {name} — PARTE RESOLUTIVA\n{section}")
+            continue
+        # OCR sometimes omits the heading but preserves the operative declaration.
+        match=re.search(r"DECLARAR\s+(?:EL\s+RECLAMO\s+)?FUNDAD[OA]",upper)
+        if match: candidates.append(f"### {name} — DECLARACIÓN FUNDADA\n{text[match.start():match.start()+12000]}")
+    return "\n\n".join(candidates) if candidates else None
+
 def exact_notification(expediente: str) -> str | None:
     path=FUENTES/"notificaciones mayo.xlsx"
     for _,df in pd.read_excel(path,sheet_name=None,dtype=str).items():
@@ -324,8 +347,12 @@ def ai_evaluate(payload: dict[str,Any]) -> dict[str,Any]:
     template="PLANTILLAS cumplimiento.docx" if payload["tipo_acto"]=="Resolución TRASU" else "PLANTILLAS DENUNCIAS ACTUALIZADAS.docx"
     case_context=json.dumps(payload,ensure_ascii=False)
     sources=legal_sources(case_context,template)
-    extraction_schema={"acto":{"numero":"","fecha":"","mandato_textual":""},"obligaciones":[{"componente":"","periodo":"","plazo_expreso":"","prueba_exigible":""}],"medios_probatorios":[{"documento":"","fecha":"","hecho_acreditado":"","cita":"","estado":"ejecutado|programado|en_curso|no_acreditado"}],"matriz_cumplimiento":[{"componente":"","estado":"acreditado|parcial|no_acreditado","sustento":""}],"datos_no_identificados":[]}
-    extraction_system="""Actúa como extractor jurídico OSIPTEL. Separa hechos de conclusiones. Identifica todas las obligaciones, periodos, montos y condiciones del mandato. Para cada prueba distingue ejecución efectiva de solicitud, programación, caso abierto o gestión en curso. Una afirmación de la empresa no prueba por sí sola el hecho. Cita el documento que respalda cada dato.
+    extraction_schema={"acto":{"numero":"","fecha":"","mandato_textual":""},"obligacion_extraida_parte_resolutiva":{"texto":"","articulo_numeral":"","declara_fundado":"si|no|no_identificado"},"obligaciones":[{"componente":"","periodo":"","plazo_expreso":"","prueba_exigible":""}],"medios_probatorios":[{"documento":"","fecha":"","hecho_acreditado":"","cita":"","estado":"ejecutado|programado|en_curso|no_acreditado"}],"matriz_cumplimiento":[{"componente":"","estado":"acreditado|parcial|no_acreditado","sustento":""}],"datos_no_identificados":[]}
+    extraction_system="""Actúa como extractor jurídico OSIPTEL. Separa hechos de conclusiones.
+
+REGLA DE ORIGEN DE LA OBLIGACIÓN: si el acto es una Resolución TRASU, identifica el mandato y todas sus obligaciones EXCLUSIVAMENTE en el campo parte_resolutiva_trasu suministrado. Debe provenir del artículo o numeral que declara FUNDADO el reclamo y ordena las medidas de cumplimiento. Está prohibido construir, completar o modificar la obligación usando antecedentes, considerandos, alegaciones de la empresa, cartas posteriores o pruebas de ejecución. Copia el mandato con fidelidad y luego sepáralo por componentes, periodos, montos y condiciones. Si la parte resolutiva no permite identificarlo, registra el dato como no identificado.
+
+Para cada prueba distingue ejecución efectiva de solicitud, programación, caso abierto o gestión en curso. Una afirmación de la empresa no prueba por sí sola el hecho. Cita el documento que respalda cada dato.
 
 REGLA OBLIGATORIA para obligaciones de informar, brindar, remitir, entregar o trasladar información al usuario: una carta o correo simple no acredita por sí solo que el usuario recibió la información. Exige acuse, confirmación de recepción o entrega, cargo de notificación con fecha o equivalente. Si solo existe envío sin recepción acreditada, marca el componente como no_acreditado.
 
@@ -372,6 +399,11 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
     result["ficha"]["fecha_notificacion_emision"]=payload.get("fecha_verificada","No identificado")
     result["ficha"]["plazo_cumplimiento"]=payload.get("plazo_verificado","Pendiente de verificación")
     result["ficha"]["fecha_vencimiento"]=payload.get("fecha_vencimiento","Pendiente de verificación")
+    resolutive_obligation=extraction.get("obligacion_extraida_parte_resolutiva") or {}
+    if isinstance(resolutive_obligation,dict) and str(resolutive_obligation.get("texto","")).strip():
+        result["ficha"]["obligacion_principal"]=str(resolutive_obligation["texto"]).strip()
+    elif payload.get("tipo_acto")=="Resolución TRASU":
+        raise ValueError("La parte resolutiva fue localizada, pero no se pudo extraer el mandato que declara fundado el reclamo")
     # Deterministic legal guard: pending/programmed work is not full execution.
     statuses={str(x.get("estado","")).lower() for x in (extraction.get("medios_probatorios") or []) if isinstance(x,dict)}
     matrix={str(x.get("estado","")).lower() for x in (extraction.get("matriz_cumplimiento") or []) if isinstance(x,dict)}
@@ -478,6 +510,9 @@ if analyze:
                 st.session_state.analysis_status="Documentos leídos; verificando expediente y plazo"
                 combined="\n\n".join(f"### {n}\n{t}" for n,t in texts.items())
                 document_types=[classify(n,t) for n,t in texts.items()]; tipo=next((x for x in document_types if x!="No identificado"),"No identificado")
+                resolutive=extract_resolutive_part(texts) if tipo=="Resolución TRASU" else None
+                if tipo=="Resolución TRASU" and not resolutive:
+                    raise ValueError("No se identificó la parte resolutiva que declara fundado el reclamo; no es posible establecer la obligación sin esa sección")
                 searchable="\n".join(u.name for u in uploads)
                 expediente=parse_trasu_name(searchable) or identify_exact_expediente(searchable) or "No identificado"
                 notice=None; due=None; term=None
@@ -491,7 +526,7 @@ if analyze:
                         if not deadline: st.session_state.analysis_error="No se pudo determinar el plazo o calcular el vencimiento con CONTADOR DE PLAZOS - TRASU 2026.xlsx"
                 if tipo!="Resolución TRASU" or (notice and due):
                     st.session_state.analysis_status="Aplicando instrucciones, criterios, pautas y plantillas"
-                    payload={"tipo_acto":tipo,"expediente_detectado":expediente,"fecha_verificada":notice or "No identificado","plazo_verificado":term or "Pendiente de verificación","fecha_vencimiento":due or "Pendiente de verificación","documentos":texts}
+                    payload={"tipo_acto":tipo,"expediente_detectado":expediente,"fecha_verificada":notice or "No identificado","plazo_verificado":term or "Pendiente de verificación","fecha_vencimiento":due or "Pendiente de verificación","parte_resolutiva_trasu":resolutive or "No corresponde","documentos":texts}
                     st.session_state.result=ai_evaluate(payload); st.session_state.texts=texts
                     st.session_state.analysis_status="Evaluación completada"
             except Exception as e:
