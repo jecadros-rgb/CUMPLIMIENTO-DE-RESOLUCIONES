@@ -147,7 +147,8 @@ def read_file(path: Path) -> str:
                 import pytesseract
                 from PIL import Image
                 text=pytesseract.image_to_string(Image.open(path),lang="spa")
-                if text.strip(): return text
+                legal_markers=("resuelve","declarar fundad","declara fundad","artículo 1","articulo 1","sentido de la resolución")
+                if text.strip() and any(x in text.lower() for x in legal_markers): return text
             except Exception: pass
             return vision_ocr(path)
     except Exception as e: return f"[Error al leer {path.name}: {e}]"
@@ -181,7 +182,8 @@ def extract_resolutive_part(documents: dict[str,str]) -> str | None:
         upper=unicodedata.normalize("NFD",text.upper())
         upper="".join(c for c in upper if unicodedata.category(c)!="Mn")
         anchors=[]
-        for pattern in (r"\bSE\s+RESUELVE\b",r"\bRESUELVE\s*:",r"\bPARTE\s+RESOLUTIVA\b"):
+        for pattern in (r"\bSE\s+RESUELVE\b",r"\bRESUELVE\s*:",r"\bPARTE\s+RESOLUTIVA\b",
+                        r"\bARTICULO\s+(?:PRIMERO|1)\b",r"\bART\.\s*1\b"):
             match=re.search(pattern,upper)
             if match: anchors.append(match.start())
         if anchors:
@@ -192,8 +194,15 @@ def extract_resolutive_part(documents: dict[str,str]) -> str | None:
                 candidates.append(f"### {name} — PARTE RESOLUTIVA\n{section}")
             continue
         # OCR sometimes omits the heading but preserves the operative declaration.
-        match=re.search(r"DECLARAR\s+(?:EL\s+RECLAMO\s+)?FUNDAD[OA]",upper)
-        if match: candidates.append(f"### {name} — DECLARACIÓN FUNDADA\n{text[match.start():match.start()+12000]}")
+        match=re.search(r"(?:DECLARAR|DECLARA|SE\s+DECLARA)[^.\n]{0,180}?FUNDAD[OA]",upper)
+        if match: candidates.append(f"### {name} — DECLARACIÓN FUNDADA\n{text[max(0,match.start()-800):match.start()+12000]}")
+        elif re.search(r"SENTIDO\s+DE\s+LA\s+RESOLUCION[^.\n]{0,100}FUNDAD[OA]",upper):
+            # Some official copies place the operative articles on the final pages.
+            candidates.append(f"### {name} — PÁGINAS FINALES DE RESOLUCIÓN FUNDADA\n{text[-18000:]}")
+        elif len(text.strip())>500:
+            # Last-resort candidate is restricted to the end of the resolution,
+            # never to letters, briefs or evidence from other documents.
+            candidates.append(f"### {name} — CANDIDATO DE PARTE RESOLUTIVA (PÁGINAS FINALES)\n{text[-18000:]}")
     return "\n\n".join(candidates) if candidates else None
 
 def exact_notification(expediente: str) -> str | None:
