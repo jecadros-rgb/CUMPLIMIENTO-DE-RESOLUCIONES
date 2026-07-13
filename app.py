@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-20"
+APP_VERSION = "2026.07.13-21"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -740,13 +740,17 @@ def enforce_conditional_reconnection_timeline(result: dict[str,Any], extraction:
 
     timely_objective_proof=False
     late_state_dates=[]
+    has_system_printer=False
     for item in (extraction.get("medios_probatorios") or []):
         if not isinstance(item,dict): continue
         state=_fold_legal_text(item.get("estado"))
         date_text=str(item.get("fecha_ejecucion_acreditada") or "").strip()
         source_text=str(item.get("fuente_fecha_ejecucion") or item.get("cita") or "").strip()
         evidence_text=_fold_legal_text(" ".join(str(item.get(k) or "") for k in
-                                                ("documento","hecho_acreditado","cita","fuente_fecha_ejecucion")))
+                                                ("documento","naturaleza","hecho_acreditado","cita","fuente_fecha_ejecucion")))
+        if any(k in evidence_text for k in ("printer","captura del sistema","consulta del sistema",
+                                             "historico del sistema","estado del servicio")):
+            has_system_printer=True
         shows_active=("servicio" in evidence_text and any(k in evidence_text for k in ("activo","operativo")))
         if state in {"ejecutado","condicion_no_configurada"} and date_text and source_text:
             event_date=pd.to_datetime(date_text,dayfirst=True,errors="coerce")
@@ -781,6 +785,13 @@ def enforce_conditional_reconnection_timeline(result: dict[str,Any], extraction:
     respect=re.search(r"\bAl\s+respecto\b.*?\.(?=\s+[A-ZÁÉÍÓÚÑ]|$)",str(paragraph or ""),flags=re.I|re.S)
     allegation=respect.group(0).strip() if respect else (
         "Al respecto, la empresa operadora señaló que el servicio se encontraba activo y operativo.")
+    # A letter contains the operator's allegation; it must not be described as
+    # the objective proof when the actual verification comes from its attached
+    # system printers or screenshots.
+    allegation=re.sub(
+        r",?\s*adjuntando\s+(?:el\s+)?documento\s+RF[-_A-Z0-9.]+(?:\.pdf)?\s+como\s+sustento",
+        "",allegation,flags=re.I)
+    allegation=re.sub(r"\s+([,.])",r"\1",allegation)
     analysis_start=re.search(r"\bAl\s+respecto\b",str(paragraph or ""),flags=re.I)
     preserved_opening=str(paragraph or "")[:analysis_start.start()].strip() if analysis_start else ""
     def with_preserved_opening(analysis: str) -> str:
@@ -789,11 +800,13 @@ def enforce_conditional_reconnection_timeline(result: dict[str,Any], extraction:
     due_text=due.strftime("%d/%m/%Y")
     if late_state_dates:
         accredited_date=min(late_state_dates).strftime("%d/%m/%Y")
+        proof_subject=("los printers de los sistemas de la empresa operadora adjuntos a la carta"
+                       if has_system_printer else "los medios probatorios objetivos adjuntos a la carta")
         checklist.append(
-            f"Validación temporal: el estado activo se acredita recién el {accredited_date}, después del "
+            f"Fuente probatoria: {proof_subject}; el estado activo se acredita recién el {accredited_date}, después del "
             f"vencimiento del {due_text}; corresponde ejecución fuera de plazo.")
         return with_preserved_opening(
-                f"{allegation} Ahora bien, dicho medio acredita que el servicio se encontraba activo y operativo "
+                f"{allegation} Ahora bien, de la revisión de {proof_subject}, se verifica que el servicio se encontraba activo y operativo "
                 f"el {accredited_date}; sin embargo, no contiene un registro histórico con una fecha anterior que "
                 f"demuestre la ejecución hasta el {due_text}. En consecuencia, la empresa operadora acreditó la "
                 "ejecución del mandato fuera del plazo establecido, con lo cual se habría configurado la infracción. "
@@ -828,7 +841,7 @@ def ai_evaluate(payload: dict[str,Any]) -> dict[str,Any]:
     if not obligation_for_criteria:
         obligation_for_criteria=str(payload.get("parte_resolutiva_trasu") or "").strip()
     sources=legal_sources(case_context,template,obligation_for_criteria)
-    extraction_schema={"acto":{"numero":"","fecha":"","mandato_textual":""},"obligacion_extraida_parte_resolutiva":{"texto":"","articulos_numerales":[],"plazo_principal_textual":""},"obligaciones_accesorias_excluidas":[{"texto":"","plazo":"","motivo_exclusion":""}],"obligaciones":[{"componente":"","periodo":"","plazo_expreso":"","prueba_exigible":""}],"medios_probatorios":[{"documento":"","fecha_documento":"","fecha_ejecucion_acreditada":"","fuente_fecha_ejecucion":"","hecho_acreditado":"","cita":"","estado":"ejecutado|condicion_no_configurada|programado|en_curso|no_acreditado"}],"matriz_cumplimiento":[{"componente":"","estado":"acreditado|parcial|no_acreditado","sustento":""}],"datos_no_identificados":[]}
+    extraction_schema={"acto":{"numero":"","fecha":"","mandato_textual":""},"obligacion_extraida_parte_resolutiva":{"texto":"","articulos_numerales":[],"plazo_principal_textual":""},"obligaciones_accesorias_excluidas":[{"texto":"","plazo":"","motivo_exclusion":""}],"obligaciones":[{"componente":"","periodo":"","plazo_expreso":"","prueba_exigible":""}],"medios_probatorios":[{"documento":"","naturaleza":"alegacion|medio_objetivo","fecha_documento":"","fecha_ejecucion_acreditada":"","fuente_fecha_ejecucion":"","hecho_acreditado":"","cita":"","estado":"ejecutado|condicion_no_configurada|programado|en_curso|no_acreditado"}],"matriz_cumplimiento":[{"componente":"","estado":"acreditado|parcial|no_acreditado","sustento":""}],"datos_no_identificados":[]}
     extraction_system="""Actúa como extractor jurídico OSIPTEL. Separa hechos de conclusiones.
 
 REGLA DE ORIGEN DE LA OBLIGACIÓN: si el acto es una Resolución TRASU, lee COMPLETA y CONJUNTAMENTE todos los artículos y numerales del campo parte_resolutiva_trasu. Identifica la obligación material principal relacionada con la prestación o controversia del servicio y su propio plazo, cualquiera sea el verbo o la forma jurídica empleados. La obligación y su plazo pueden estar en numerales consecutivos y no tienen que aparecer en el mismo numeral que declara fundado el reclamo. No uses listas cerradas de verbos. Copia el mandato con fidelidad y sepáralo por componentes, periodos, montos y condiciones.
@@ -838,6 +851,8 @@ REGLA OBLIGATORIA — VARIOS NUMERALES EN LA PARTE RESOLUTIVA: vincula cada plaz
 Los antecedentes y considerandos solo pueden aclarar una referencia o el alcance de un mandato ya contenido en HA RESUELTO. Nunca pueden crear, sustituir o ampliar la obligación. Las alegaciones, cartas posteriores y pruebas de ejecución tampoco pueden definirla.
 
 Para cada prueba distingue ejecución efectiva de solicitud, programación, caso abierto o gestión en curso. Una afirmación de la empresa no prueba por sí sola el hecho. Cita el documento que respalda cada dato.
+
+SEPARACIÓN ENTRE ALEGACIÓN Y PRUEBA OBJETIVA: una carta de descargos, como los documentos RF-T-FC, acredita la fecha y el contenido de lo afirmado por la empresa, pero no acredita por sí sola la ejecución material. Registra la carta como naturaleza=alegacion. Registra separadamente como naturaleza=medio_objetivo los printers, capturas, consultas, históricos, recibos, notas de crédito, actas u otros anexos provenientes de los sistemas o actuaciones de la empresa. El razonamiento debe decir que la empresa señaló el hecho mediante la carta y que este se verifica —cuando corresponda— en el medio objetivo adjunto; nunca denomines a la propia carta como el sustento objetivo de su afirmación.
 
 REGLA TEMPORAL OBLIGATORIA: distingue siempre la fecha del documento o de su remisión de la fecha efectiva de ejecución que el documento acredita. Un documento posterior al vencimiento puede acreditar una ejecución anterior únicamente cuando contiene un registro histórico, fecha de operación, evento de sistema u otro dato objetivo que identifique esa ejecución anterior. Un printer que solo muestra el estado actual "activo", sin fecha histórica de reconexión o de estado, no acredita por sí solo que la obligación se ejecutó dentro del plazo. Si el medio carece de fecha efectiva, deja fecha_ejecucion_acreditada vacía; nunca copies allí automáticamente la fecha de la carta.
 
