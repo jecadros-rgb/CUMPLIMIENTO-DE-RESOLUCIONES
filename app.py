@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-13"
+APP_VERSION = "2026.07.13-14"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -142,12 +142,25 @@ def read_file(path: Path) -> str:
     try:
         if ext==".pdf":
             from pypdf import PdfReader
-            text="\n".join((p.extract_text() or "") for p in PdfReader(str(path)).pages)
-            if len(text.strip())<80:
+            reader=PdfReader(str(path))
+            text="\n".join((p.extract_text() or "") for p in reader.pages)
+            # Hybrid PDFs often contain a short text layer plus printers,
+            # screenshots or scanned evidence as images. A text-length check
+            # alone silently omitted those facts. OCR every page locally when
+            # raster images are present and append it to the extracted text.
+            try:
+                has_raster_images=any(bool(getattr(page,"images",[])) for page in reader.pages)
+            except Exception:
+                has_raster_images=False
+            if len(text.strip())<80 or has_raster_images:
                 try:
                     import pytesseract
                     from pdf2image import convert_from_path
-                    text="\n".join(pytesseract.image_to_string(x,lang="spa") for x in convert_from_path(str(path)))
+                    images=convert_from_path(str(path),dpi=170,thread_count=2)
+                    ocr_text="\n".join(
+                        f"--- OCR PÁGINA {i+1} ---\n"+pytesseract.image_to_string(image,lang="spa")
+                        for i,image in enumerate(images))
+                    if ocr_text.strip(): text=(text+"\n\n"+ocr_text).strip()
                 except Exception: pass
             if len(text.strip())<80:
                 return vision_ocr(path)
@@ -324,6 +337,15 @@ def extract_resolutive_part(documents: dict[str,str]) -> str | None:
         if classify(name,text)!="Resolución TRASU": continue
         upper=unicodedata.normalize("NFD",text.upper())
         upper="".join(c for c in upper if unicodedata.category(c)!="Mn")
+        upper_name=unicodedata.normalize("NFD",name.upper())
+        upper_name="".join(c for c in upper_name if unicodedata.category(c)!="Mn")
+        resolution_document=(
+            bool(re.search(r"RESOLUCION[^\n]{0,40}FINAL",upper_name)) or
+            bool(re.search(r"TRIBUNAL\s+ADMINISTRATIVO[\s\S]{0,500}RESOLUCION\s+FINAL",upper))
+        )
+        # A letter or an evidence annex may mention TRASU, but that does not
+        # turn it into the resolution whose operative section defines the duty.
+        if not resolution_document: continue
         anchors=[]
         for pattern in (r"\bHA\s+RESUELTO\b",r"\bSE\s+RESUELVE\b",r"\bRESUELVE\s*:",r"\bPARTE\s+RESOLUTIVA\b",
                         r"\bARTICULO\s+(?:PRIMERO|1)\b",r"\bART\.\s*1\b"):
@@ -556,6 +578,7 @@ def normalize_legal_paragraph(paragraph: str, ficha: dict[str,Any], resultado: s
         term=str(ficha.get("plazo_cumplimiento") or "").strip()
         obligation=str(ficha.get("obligacion_principal") or "").strip()
         if obligation:
+            obligation=obligation.rstrip(" .;,")
             obligation=obligation[:1].lower()+obligation[1:]
         invalid={"","no identificado","pendiente de verificación","pendiente de verificacion"}
         if notification.lower() not in invalid and due.lower() not in invalid and term.lower() not in invalid:
