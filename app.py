@@ -190,7 +190,7 @@ def extract_resolutive_part(documents: dict[str,str]) -> str | None:
         upper=unicodedata.normalize("NFD",text.upper())
         upper="".join(c for c in upper if unicodedata.category(c)!="Mn")
         anchors=[]
-        for pattern in (r"\bSE\s+RESUELVE\b",r"\bRESUELVE\s*:",r"\bPARTE\s+RESOLUTIVA\b",
+        for pattern in (r"\bHA\s+RESUELTO\b",r"\bSE\s+RESUELVE\b",r"\bRESUELVE\s*:",r"\bPARTE\s+RESOLUTIVA\b",
                         r"\bARTICULO\s+(?:PRIMERO|1)\b",r"\bART\.\s*1\b"):
             match=re.search(pattern,upper)
             if match: anchors.append(match.start())
