@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-17"
+APP_VERSION = "2026.07.13-18"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -713,6 +713,11 @@ def normalize_legal_paragraph(paragraph: str, ficha: dict[str,Any], resultado: s
     else:
         conclusion="En consecuencia, no fue posible establecer una conclusión definitiva. Asimismo"
     text=re.sub(r"\bEn\s+consecuencia\s*[;,.]?\s*Asimismo\b",conclusion,text,flags=re.I)
+    # Some otherwise valid drafts omit the conclusion entirely and jump from
+    # the evidentiary contrast directly to subsanation. Insert only the locked
+    # conclusion; preserve every preceding fact and every following analysis.
+    if not re.search(r"\bEn\s+consecuencia\b",text,flags=re.I):
+        text=re.sub(r"\bAsimismo\b",conclusion,text,count=1,flags=re.I)
     return text
 
 def enforce_conditional_reconnection_timeline(result: dict[str,Any], extraction: dict[str,Any],
