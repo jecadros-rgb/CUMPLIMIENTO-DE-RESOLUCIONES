@@ -72,7 +72,7 @@ def gemini_text(system: str, user: Any, json_mode: bool=False) -> str:
     config=types.GenerateContentConfig(system_instruction=system,max_output_tokens=32768)
     if json_mode: config.response_mime_type="application/json"
     client=gemini_client()
-    last_error=None
+    errors=[]
     # Flash-Lite first: it is both far cheaper and has a much higher free-tier
     # daily quota than 3.5-flash, so prefer it in every call, not only OCR.
     models=("gemini-3.1-flash-lite","gemini-3.5-flash")
@@ -85,8 +85,8 @@ def gemini_text(system: str, user: Any, json_mode: bool=False) -> str:
             if not text: raise RuntimeError(f"El modelo {model} no devolvió contenido utilizable (motivo: {finish}).")
             return text
         except Exception as e:
-            last_error=e
-    raise last_error
+            errors.append(f"{model}: {e}")
+    raise RuntimeError(" | ".join(errors))
 
 def parse_json_response(text: str) -> Any:
     """Gemini's JSON mode can still wrap output in markdown fences or append trailing text; recover the first valid value."""
