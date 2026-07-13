@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-7"
+APP_VERSION = "2026.07.13-8"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -302,9 +302,19 @@ Incluye todos los numerales resolutivos visibles y conserva las referencias entr
         return f"[OCR no disponible para {path.name}: {e}]"
 
 def classify(name: str, text: str) -> str:
-    s=(name+" "+text[:3000]).lower()
-    for key,label in [("sara","SARA"),("sar","SAR"),("sap","SAP"),("denuncia","Denuncia"),("carta","Carta"),("primera instancia","Resolución de primera instancia"),("trasu","Resolución TRASU")]:
-        if key in s: return label
+    # TRASU must win when it is present in the filename or document text.
+    # SAR/SARA/SAP are acronyms: substring matching wrongly classified ordinary
+    # words containing "sar" and caused valid TRASU resolutions to be skipped.
+    s=name+" "+text[:6000]
+    folded=unicodedata.normalize("NFD",s.upper())
+    folded="".join(c for c in folded if unicodedata.category(c)!="Mn")
+    if re.search(r"(?<![A-Z0-9])TRASU(?![A-Z0-9])",folded) or "TRASU" in name.upper():
+        return "Resolución TRASU"
+    for acronym,label in (("SARA","SARA"),("SAR","SAR"),("SAP","SAP")):
+        if re.search(rf"(?<![A-Z0-9]){acronym}(?![A-Z0-9])",folded): return label
+    low=folded.lower()
+    for key,label in (("denuncia","Denuncia"),("carta","Carta"),("primera instancia","Resolución de primera instancia")):
+        if key in low: return label
     return "No identificado"
 
 def extract_resolutive_part(documents: dict[str,str]) -> str | None:
