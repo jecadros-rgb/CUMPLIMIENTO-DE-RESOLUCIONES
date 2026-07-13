@@ -426,7 +426,12 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
     # Deterministic legal guard: pending/programmed work is not full execution.
     statuses={str(x.get("estado","")).lower() for x in (extraction.get("medios_probatorios") or []) if isinstance(x,dict)}
     matrix={str(x.get("estado","")).lower() for x in (extraction.get("matriz_cumplimiento") or []) if isinstance(x,dict)}
-    incomplete=bool(statuses & {"programado","en_curso","no_acreditado"} or matrix & {"parcial","no_acreditado"})
+    # A single unaccredited piece of evidence (e.g. an incidental notification letter) must not
+    # override compliance by itself; only the per-obligation matrix (which the main evaluation
+    # step builds while reading criterios_evaluacion_obligatorios.txt) decides that. "programado"/
+    # "en_curso" are the exception: they mean the action was never finished, regardless of which
+    # document reports it.
+    incomplete=bool(statuses & {"programado","en_curso"} or matrix & {"parcial","no_acreditado"})
     if incomplete:
         result["resultado"]="Incumplió"
         result["subsanacion_voluntaria"]="no aplica"
