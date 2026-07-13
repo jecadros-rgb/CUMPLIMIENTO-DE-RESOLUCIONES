@@ -77,10 +77,9 @@ def gemini_text(system: str, user: Any, json_mode: bool=False) -> str:
     # daily quota than 3.5-flash, so prefer it in every call, not only OCR.
     models=("gemini-3.1-flash-lite","gemini-3.5-flash")
     for model in models:
-        # RECITATION is a documented, occasionally random Gemini safety trip that
-        # can fire even on the user's own official documents; retrying the same
-        # model a couple of times often succeeds where the first attempt didn't.
-        for attempt in range(3):
+        # Do not repeat an identical rejected request: repeated RECITATION calls
+        # consume the small free quota without improving the document extraction.
+        for attempt in range(1):
             try:
                 response=client.models.generate_content(model=model,contents=user,config=config)
                 candidates=response.candidates or []
@@ -148,6 +147,8 @@ def read_file(path: Path) -> str:
                     from pdf2image import convert_from_path
                     text="\n".join(pytesseract.image_to_string(x,lang="spa") for x in convert_from_path(str(path)))
                 except Exception: pass
+            if len(text.strip())<80:
+                return vision_ocr(path)
             return text
         if ext==".docx":
             from docx import Document
@@ -173,6 +174,27 @@ def read_file(path: Path) -> str:
 
 def vision_ocr(path: Path) -> str:
     """OCR scanned images in small batches, prioritizing the end of legal resolutions."""
+    schema={"tipo_documento":"","expediente":"","numero_acto":"","fecha_acto":"",
+            "ha_resuelto":[{"numeral":"","obligacion_o_disposicion":"","plazo":"",
+                             "destinatario":"","es_obligacion_accesoria":False}],
+            "hechos_probatorios_relevantes":[]}
+    instruction="""Analiza las imágenes de este documento jurídico y extrae hechos estructurados; NO transcribas íntegramente el documento ni reproduzcas párrafos largos.
+Identifica tipo de documento, expediente, número y fecha del acto. Si aparece HA RESUELTO, extrae por separado cada numeral, describiendo fielmente pero de forma concisa su obligación o disposición, su plazo, destinatario y si es una obligación accesoria de informar posteriormente el cumplimiento al usuario o al TRASU. No inventes datos ilegibles.
+Para documentos probatorios, resume únicamente fechas, importes, acciones efectivamente ejecutadas y constancias visibles. Devuelve JSON conforme al esquema."""
+    def facts_text(raw: str) -> str:
+        data=parse_json_response(raw) if raw else {}
+        if not isinstance(data,dict): return ""
+        lines=[f"TIPO DE DOCUMENTO: {data.get('tipo_documento','')}",
+               f"EXPEDIENTE: {data.get('expediente','')}",f"NÚMERO DE ACTO: {data.get('numero_acto','')}",
+               f"FECHA DEL ACTO: {data.get('fecha_acto','')}"]
+        operative=data.get("ha_resuelto") or []
+        if operative:
+            lines.append("HA RESUELTO")
+            for item in operative:
+                if not isinstance(item,dict): continue
+                lines.append(f"NUMERAL {item.get('numeral','')}: {item.get('obligacion_o_disposicion','')} | PLAZO: {item.get('plazo','')} | DESTINATARIO: {item.get('destinatario','')} | ACCESORIA: {item.get('es_obligacion_accesoria',False)}")
+        for fact in (data.get("hechos_probatorios_relevantes") or []): lines.append(f"HECHO PROBATORIO: {fact}")
+        return "\n".join(lines)
     try:
         from PIL import Image
         Image.MAX_IMAGE_PIXELS=None
@@ -188,7 +210,7 @@ def vision_ocr(path: Path) -> str:
         batches=[indices[i:i+5] for i in range(0,len(indices),5)]
         transcriptions=[]; errors=[]
         for batch in batches:
-            content=["Transcribe fielmente todo el texto jurídico visible. Conserva artículos, numerales, obligaciones y plazos. Marca cada imagen con el número de página indicado. No resumas ni inventes."]
+            content=[instruction+"\nESQUEMA: "+json.dumps(schema,ensure_ascii=False)]
             for index in batch:
                 source.seek(index)
                 image=source.convert("RGB"); image.thumbnail((1500,1500))
@@ -196,8 +218,9 @@ def vision_ocr(path: Path) -> str:
                 content.append(f"--- Página {index+1} de {total} ---")
                 content.append(types.Part.from_bytes(data=buf.getvalue(),mime_type="image/jpeg"))
             try:
-                text=gemini_text("Eres un sistema OCR jurídico preciso. Devuelve solo la transcripción fiel.",content)
-                if str(text).strip(): transcriptions.append(str(text).strip())
+                text=gemini_text("Eres un extractor de hechos jurídicos visibles en imágenes. Evita transcripciones extensas.",content,json_mode=True)
+                converted=facts_text(text)
+                if converted.strip(): transcriptions.append(converted)
             except Exception as batch_error:
                 errors.append(f"páginas {batch[0]+1}-{batch[-1]+1}: {batch_error}")
         if transcriptions:
@@ -207,9 +230,10 @@ def vision_ocr(path: Path) -> str:
         try:
             client=gemini_client()
             uploaded=client.files.upload(file=str(path))
-            prompt="Transcribe íntegramente este documento jurídico multipágina. Prioriza y copia literalmente la sección HA RESUELTO, todos sus numerales, obligaciones y plazos. No resumas ni inventes."
-            raw=gemini_text("Eres un sistema OCR jurídico preciso. Devuelve solo la transcripción fiel.",[uploaded,prompt])
-            if str(raw).strip(): return str(raw).strip()
+            prompt=instruction+"\nESQUEMA: "+json.dumps(schema,ensure_ascii=False)
+            raw=gemini_text("Eres un extractor de hechos jurídicos. Evita transcripciones extensas.",[uploaded,prompt],json_mode=True)
+            converted=facts_text(raw)
+            if converted.strip(): return converted
             errors.append("el archivo TIFF original no produjo texto")
         except Exception as upload_error:
             errors.append(f"lectura directa del TIFF: {upload_error}")
@@ -219,9 +243,10 @@ def vision_ocr(path: Path) -> str:
         try:
             client=gemini_client()
             uploaded=client.files.upload(file=str(path))
-            prompt="Transcribe este documento jurídico multipágina. Copia literalmente HA RESUELTO, sus numerales, obligaciones y plazos. No resumas ni inventes."
-            raw=gemini_text("Eres un sistema OCR jurídico preciso.",[uploaded,prompt])
-            if str(raw).strip(): return str(raw).strip()
+            prompt=instruction+"\nESQUEMA: "+json.dumps(schema,ensure_ascii=False)
+            raw=gemini_text("Eres un extractor de hechos jurídicos. Evita transcripciones extensas.",[uploaded,prompt],json_mode=True)
+            converted=facts_text(raw)
+            if converted.strip(): return converted
         except Exception as upload_error:
             return f"[OCR no disponible para {path.name}: conversión por páginas: {e}; lectura directa: {upload_error}]"
         return f"[OCR no disponible para {path.name}: {e}]"
