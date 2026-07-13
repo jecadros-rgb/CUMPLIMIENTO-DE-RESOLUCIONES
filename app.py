@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-19"
+APP_VERSION = "2026.07.13-20"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -781,6 +781,10 @@ def enforce_conditional_reconnection_timeline(result: dict[str,Any], extraction:
     respect=re.search(r"\bAl\s+respecto\b.*?\.(?=\s+[A-ZÁÉÍÓÚÑ]|$)",str(paragraph or ""),flags=re.I|re.S)
     allegation=respect.group(0).strip() if respect else (
         "Al respecto, la empresa operadora señaló que el servicio se encontraba activo y operativo.")
+    analysis_start=re.search(r"\bAl\s+respecto\b",str(paragraph or ""),flags=re.I)
+    preserved_opening=str(paragraph or "")[:analysis_start.start()].strip() if analysis_start else ""
+    def with_preserved_opening(analysis: str) -> str:
+        return (preserved_opening+" "+analysis).strip() if preserved_opening else analysis
     notification_text=notification.strftime("%d/%m/%Y")
     due_text=due.strftime("%d/%m/%Y")
     if late_state_dates:
@@ -788,7 +792,8 @@ def enforce_conditional_reconnection_timeline(result: dict[str,Any], extraction:
         checklist.append(
             f"Validación temporal: el estado activo se acredita recién el {accredited_date}, después del "
             f"vencimiento del {due_text}; corresponde ejecución fuera de plazo.")
-        return (f"{allegation} Ahora bien, dicho medio acredita que el servicio se encontraba activo y operativo "
+        return with_preserved_opening(
+                f"{allegation} Ahora bien, dicho medio acredita que el servicio se encontraba activo y operativo "
                 f"el {accredited_date}; sin embargo, no contiene un registro histórico con una fecha anterior que "
                 f"demuestre la ejecución hasta el {due_text}. En consecuencia, la empresa operadora acreditó la "
                 "ejecución del mandato fuera del plazo establecido, con lo cual se habría configurado la infracción. "
@@ -797,7 +802,8 @@ def enforce_conditional_reconnection_timeline(result: dict[str,Any], extraction:
     checklist.append(
         "Validación temporal: no existe prueba objetiva fechada que acredite que la condición no se configuró "
         "en la fecha de notificación o que la reconexión se ejecutó hasta el vencimiento.")
-    return (f"{allegation} Ahora bien, dicho medio acredita únicamente el estado del servicio en la fecha de "
+    return with_preserved_opening(
+            f"{allegation} Ahora bien, dicho medio acredita únicamente el estado del servicio en la fecha de "
             f"su consulta o comunicación, pero no contiene un registro histórico con fecha objetiva que demuestre que "
             f"el servicio ya estaba activo el {notification_text} ni que hubiese sido reconectado hasta el {due_text}. "
             "Por tanto, un estado posterior no permite inferir que la condición del mandato no se configuró al momento "
@@ -899,6 +905,7 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
     result["trazabilidad"]=trace
     # Verified spreadsheet values are authoritative; the model cannot recalculate them.
     result.setdefault("ficha",{})["expediente"]=payload.get("expediente_detectado","No identificado")
+    result["ficha"]["tipo_acto"]=payload.get("tipo_acto","No identificado")
     result["ficha"]["fecha_notificacion_emision"]=payload.get("fecha_verificada","No identificado")
     result["ficha"]["plazo_cumplimiento"]=payload.get("plazo_verificado","Pendiente de verificación")
     result["ficha"]["fecha_vencimiento"]=payload.get("fecha_vencimiento","Pendiente de verificación")
