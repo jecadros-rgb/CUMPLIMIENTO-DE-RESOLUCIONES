@@ -86,6 +86,14 @@ def gemini_text(system: str, user: Any, json_mode: bool=False, fast: bool=False)
             last_error=e
     raise last_error
 
+def parse_json_response(text: str) -> Any:
+    """Gemini's JSON mode can still wrap output in markdown fences or append trailing text; recover the first valid value."""
+    cleaned=text.strip()
+    if cleaned.startswith("```"):
+        cleaned=re.sub(r"^```[a-zA-Z]*\n?","",cleaned)
+        cleaned=re.sub(r"```\s*$","",cleaned).strip()
+    return json.JSONDecoder().raw_decode(cleaned)[0]
+
 def fuente_status() -> tuple[bool, list[str]]:
     faltan = [n for n in FUENTES_REQUERIDAS if not (FUENTES / n).is_file()]
     instrucciones_ok = INSTRUCCIONES.is_file() and INSTRUCCIONES.stat().st_size > 150
@@ -366,7 +374,7 @@ Para cada prueba distingue ejecución efectiva de solicitud, programación, caso
 REGLA OBLIGATORIA para obligaciones de informar, brindar, remitir, entregar o trasladar información al usuario: una carta o correo simple no acredita por sí solo que el usuario recibió la información. Exige acuse, confirmación de recepción o entrega, cargo de notificación con fecha o equivalente. Si solo existe envío sin recepción acreditada, marca el componente como no_acreditado.
 
 No evalúes todavía PAS ni subsanación. Devuelve JSON conforme al esquema."""
-    extraction=json.loads(gemini_text(extraction_system,json.dumps({"esquema":extraction_schema,"caso":payload},ensure_ascii=False),json_mode=True)) or {}
+    extraction=parse_json_response(gemini_text(extraction_system,json.dumps({"esquema":extraction_schema,"caso":payload},ensure_ascii=False),json_mode=True)) or {}
     if not isinstance(extraction,dict): raise ValueError("Gemini no devolvió una extracción jurídica válida")
     schema={"ficha":{"expediente":"","empresa_operadora":"","usuario_abonado":"","servicio":"","tipo_acto":"","numero_acto":"","fecha_notificacion_emision":"","plazo_cumplimiento":"","fecha_vencimiento":"","obligacion_principal":"","medios_probatorios":[]},"trazabilidad":[],"evaluacion_juridica":{"checklist":[],"sustento_breve":"","tipo_incumplimiento":""},"resultado":"Cumplió|Incumplió|Inejecutable","subsanacion_voluntaria":"aplica|no aplica|no corresponde","clasificacion":"PAS|NO PAS","parrafo_final":"","datos_pendientes":[]}
     system="""Eres analista jurídico senior de OSIPTEL. Usa SOLO la evidencia y fuentes entregadas. No inventes fechas, pruebas ni conclusiones. Lo faltante es 'No identificado' o 'Pendiente de verificación'.
@@ -399,7 +407,7 @@ MÉTODO Y CONTROLES JURÍDICOS OBLIGATORIOS (en este orden):
 
 Devuelve JSON válido conforme al esquema y un párrafo final completo, cronológico, con obligación, pruebas por periodo, contraste, conclusión y análisis separado de subsanación."""
     user=json.dumps({"esquema":schema,"caso":{k:v for k,v in payload.items() if k!="documentos"},"extraccion_probatoria":extraction,"fuentes":sources},ensure_ascii=False)
-    result=json.loads(gemini_text(system,user,json_mode=True)) or {}
+    result=parse_json_response(gemini_text(system,user,json_mode=True)) or {}
     if not isinstance(result,dict): raise ValueError("Gemini no devolvió una evaluación jurídica válida")
     if not isinstance(result.get("ficha"),dict): result["ficha"]={}
     if not isinstance(result.get("evaluacion_juridica"),dict): result["evaluacion_juridica"]={}
@@ -429,7 +437,7 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
             "clasificacion_obligatoria":"PAS","fuentes_aplicables":sources,
         }
         rewrite_system="""Redacta un único párrafo jurídico conforme a la plantilla TRASU. Las conclusiones indicadas como obligatorias están bloqueadas y no puedes modificarlas. Debes indicar literalmente la fecha de notificación, el plazo de cumplimiento (número y tipo de días) y la fecha de vencimiento que aparecen en la ficha; no puedes recalcularlos ni omitirlos. No afirmes que una programación, solicitud, carta o gestión en curso acredita ejecución. Explica que, al quedar periodos sin prueba de registro y activación efectiva, no hubo ejecución íntegra, cese total ni reversión integral. No apliques el eximente por el solo hecho de que no exista restricción del servicio. Devuelve JSON {parrafo_final:string}."""
-        rewritten=json.loads(gemini_text(rewrite_system,json.dumps(locked,ensure_ascii=False),json_mode=True)) or {}
+        rewritten=parse_json_response(gemini_text(rewrite_system,json.dumps(locked,ensure_ascii=False),json_mode=True)) or {}
         if not isinstance(rewritten,dict): rewritten={}
         result["parrafo_final"]=rewritten.get("parrafo_final",result.get("parrafo_final",""))
     # A response without a paragraph is never a completed evaluation.
@@ -439,7 +447,7 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
                 "clasificacion":result.get("clasificacion"),"fuentes_aplicables":sources}
         fallback_system="""Redacta el párrafo jurídico final conforme a la plantilla aplicable. Relaciona en orden: acto y notificación; plazo y vencimiento de la ficha; mandato; alegaciones; pruebas objetivas; contraste por cada obligación o periodo; conclusión; y subsanación. No cambies el resultado, la clasificación ni la subsanación ya determinadas. No inventes. Devuelve JSON {parrafo_final:string}."""
         try:
-            fallback=json.loads(gemini_text(fallback_system,json.dumps(locked,ensure_ascii=False),json_mode=True)) or {}
+            fallback=parse_json_response(gemini_text(fallback_system,json.dumps(locked,ensure_ascii=False),json_mode=True)) or {}
             if isinstance(fallback,dict): result["parrafo_final"]=str(fallback.get("parrafo_final","")).strip()
         except Exception:
             result["parrafo_final"]=""
@@ -455,7 +463,7 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
 def regenerate_paragraph(result: dict[str,Any]) -> str:
     context={"ficha":result.get("ficha",{}),"evaluacion_juridica":result.get("evaluacion_juridica",{}),"resultado":result.get("resultado"),"subsanacion_voluntaria":result.get("subsanacion_voluntaria"),"clasificacion":result.get("clasificacion"),"datos_pendientes":result.get("datos_pendientes",[]),"instrucciones":INSTRUCCIONES.read_text("utf-8",errors="ignore")[:40000]}
     response=gemini_text("Regenera únicamente el párrafo jurídico final con los datos aportados. No inventes ni completes faltantes. Devuelve JSON {parrafo_final:string}.",json.dumps(context,ensure_ascii=False),json_mode=True)
-    return json.loads(response)["parrafo_final"]
+    return parse_json_response(response)["parrafo_final"]
 
 def to_row(result: dict, documents: list[str]) -> dict:
     f=result.get("ficha",{}); e=result.get("evaluacion_juridica",{})
