@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-10"
+APP_VERSION = "2026.07.13-11"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -555,6 +555,8 @@ def normalize_legal_paragraph(paragraph: str, ficha: dict[str,Any]) -> str:
         due=str(ficha.get("fecha_vencimiento") or "").strip()
         term=str(ficha.get("plazo_cumplimiento") or "").strip()
         obligation=str(ficha.get("obligacion_principal") or "").strip()
+        if obligation:
+            obligation=obligation[:1].lower()+obligation[1:]
         invalid={"","no identificado","pendiente de verificación","pendiente de verificacion"}
         if notification.lower() not in invalid and due.lower() not in invalid and term.lower() not in invalid:
             # The legal header is deterministic. Gemini may draft only the
@@ -567,6 +569,17 @@ def normalize_legal_paragraph(paragraph: str, ficha: dict[str,Any]) -> str:
             text=opening+(" "+tail if tail else "")
         else:
             raise ValueError("No se puede redactar un párrafo TRASU sin notificación, plazo y vencimiento verificados")
+        folded_obligation=unicodedata.normalize("NFD",obligation.lower())
+        folded_obligation="".join(c for c in folded_obligation if unicodedata.category(c)!="Mn")
+        if any(k in folded_obligation for k in ("reconect","reactiv","restablec")):
+            # Final deterministic guard against cross-matter language. Gemini
+            # sometimes copies discount-specific wording even after the matter
+            # filter. Such clauses are impossible in a reconnection analysis.
+            text=re.sub(
+                r"[,;]\s*(?:al\s+haber\s+)?(?:quedando|existiendo)?\s*(?:periodos?|meses?)\b[^.;]*?(?:descuent\w*|benefici\w*|importes?|montos?|registro\s+y\s+activaci[oó]n)[^.;]*[;.]?",
+                ";",text,flags=re.I)
+            text=re.sub(r";\s*;",";",text)
+            text=re.sub(r"\s+([,;:.])",r"\1",text)
     return text
 
 def ai_evaluate(payload: dict[str,Any]) -> dict[str,Any]:
