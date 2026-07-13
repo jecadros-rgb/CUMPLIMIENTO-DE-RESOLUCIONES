@@ -225,7 +225,7 @@ def exact_notification(expediente: str) -> str | None:
                 raw=str(hit.iloc[0]).strip()
                 # The source column stores a full timestamp (00:00:00); keep only the date.
                 parsed=pd.to_datetime(raw,errors="coerce")
-                return parsed.strftime("%Y-%m-%d") if pd.notna(parsed) else raw
+                return parsed.strftime("%d/%m/%Y") if pd.notna(parsed) else raw
     return None
 
 def identify_exact_expediente(context: str) -> str | None:
@@ -321,7 +321,7 @@ def calculate_due(notification: str, context: str) -> tuple[str,str] | None:
         elif 10 in explicit_days:
             days=10
         elif re.search(r"(?:plazo[^.]{0,80})?(?:un\s*\(1\)|1)\s*mes",normalized):
-            return (start+pd.DateOffset(months=1)).strftime("%Y-%m-%d"),"1 mes"
+            return (start+pd.DateOffset(months=1)).strftime("%d/%m/%Y"),"1 mes"
         else:
             days=10
         term=f"{days} días hábiles"
@@ -329,7 +329,7 @@ def calculate_due(notification: str, context: str) -> tuple[str,str] | None:
         if holidays_book.shape[1] < 2: raise ValueError("la hoja No laborables (2) no contiene la columna Lima")
         holidays=pd.to_datetime(holidays_book.iloc[:,1],dayfirst=True,errors="coerce").dropna().dt.normalize().unique()
         offset=pd.offsets.CustomBusinessDay(n=days,weekmask="Mon Tue Wed Thu Fri",holidays=list(holidays))
-        return (start.normalize()+offset).strftime("%Y-%m-%d"),term
+        return (start.normalize()+offset).strftime("%d/%m/%Y"),term
     except Exception as e:
         raise ValueError(f"error del contador de plazos: {e}") from e
 
