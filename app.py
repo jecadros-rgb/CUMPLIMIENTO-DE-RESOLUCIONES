@@ -68,12 +68,14 @@ def get_api_key() -> str | None:
 def gemini_client():
     return genai.Client(api_key=get_api_key())
 
-def gemini_text(system: str, user: Any, json_mode: bool=False, fast: bool=False) -> str:
+def gemini_text(system: str, user: Any, json_mode: bool=False) -> str:
     config=types.GenerateContentConfig(system_instruction=system,max_output_tokens=32768)
     if json_mode: config.response_mime_type="application/json"
     client=gemini_client()
     last_error=None
-    models=("gemini-3.1-flash-lite","gemini-3.5-flash") if fast else ("gemini-3.5-flash","gemini-3.1-flash-lite")
+    # Flash-Lite first: it is both far cheaper and has a much higher free-tier
+    # daily quota than 3.5-flash, so prefer it in every call, not only OCR.
+    models=("gemini-3.1-flash-lite","gemini-3.5-flash")
     for model in models:
         try:
             response=client.models.generate_content(model=model,contents=user,config=config)
@@ -180,7 +182,7 @@ def vision_ocr(path: Path) -> str:
             image=frame.convert("RGB"); image.thumbnail((1800,1800))
             buf=io.BytesIO(); image.save(buf,format="JPEG",quality=85)
             content.append(types.Part.from_bytes(data=buf.getvalue(),mime_type="image/jpeg"))
-        return gemini_text("Eres un sistema OCR jurídico preciso.",content,fast=True)
+        return gemini_text("Eres un sistema OCR jurídico preciso.",content)
     except Exception as e:
         return f"[OCR no disponible para {path.name}: {e}]"
 
