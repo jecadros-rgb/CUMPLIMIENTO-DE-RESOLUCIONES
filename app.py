@@ -172,22 +172,37 @@ def read_file(path: Path) -> str:
     return ""
 
 def vision_ocr(path: Path) -> str:
-    """OCR cloud fallback for scanned images, including multi-page TIFF converted to JPEG."""
+    """OCR scanned images in small batches, prioritizing the end of legal resolutions."""
     try:
-        from PIL import Image, ImageSequence
+        from PIL import Image
+        Image.MAX_IMAGE_PIXELS=None
         source=Image.open(path)
-        content=["Transcribe fielmente todo el texto jurídico visible en cada una de las páginas de imagen adjuntas, en orden, marcando cada una con '--- Página N ---'. No resumas, no omitas ninguna página ni inventes contenido."]
-        # IMPORTANT: do not wrap this in list(...) first. ImageSequence.Iterator
-        # re-seeks the SAME underlying image object on every step; materializing
-        # a list before converting each frame leaves every entry pointing at the
-        # last frame's data. Convert to RGB immediately, inside the loop, so each
-        # frame's pixels are captured before the iterator advances.
-        for i,frame in enumerate(ImageSequence.Iterator(source)):
-            if i>=20: break
-            image=frame.convert("RGB"); image.thumbnail((1800,1800))
-            buf=io.BytesIO(); image.save(buf,format="JPEG",quality=85)
-            content.append(types.Part.from_bytes(data=buf.getvalue(),mime_type="image/jpeg"))
-        return gemini_text("Eres un sistema OCR jurídico preciso.",content)
+        total=max(1,int(getattr(source,"n_frames",1)))
+        # HA RESUELTO is normally on the final pages. For very large TIFF files,
+        # read the cover and the final 18 pages instead of silently stopping at
+        # the first 20 pages, which previously omitted the operative section.
+        if total<=30:
+            indices=list(range(total))
+        else:
+            indices=sorted(set(list(range(min(6,total)))+list(range(max(0,total-18),total))))
+        batches=[indices[i:i+5] for i in range(0,len(indices),5)]
+        transcriptions=[]; errors=[]
+        for batch in batches:
+            content=["Transcribe fielmente todo el texto jurídico visible. Conserva artículos, numerales, obligaciones y plazos. Marca cada imagen con el número de página indicado. No resumas ni inventes."]
+            for index in batch:
+                source.seek(index)
+                image=source.convert("RGB"); image.thumbnail((1500,1500))
+                buf=io.BytesIO(); image.save(buf,format="JPEG",quality=78,optimize=True)
+                content.append(f"--- Página {index+1} de {total} ---")
+                content.append(types.Part.from_bytes(data=buf.getvalue(),mime_type="image/jpeg"))
+            try:
+                text=gemini_text("Eres un sistema OCR jurídico preciso. Devuelve solo la transcripción fiel.",content)
+                if str(text).strip(): transcriptions.append(str(text).strip())
+            except Exception as batch_error:
+                errors.append(f"páginas {batch[0]+1}-{batch[-1]+1}: {batch_error}")
+        if transcriptions:
+            return "\n\n".join(transcriptions)
+        raise RuntimeError("; ".join(errors) if errors else "ningún lote produjo texto")
     except Exception as e:
         return f"[OCR no disponible para {path.name}: {e}]"
 
@@ -620,6 +635,7 @@ if analyze:
                     st.session_state.analysis_status="Evaluación completada"
             except Exception as e:
                 st.session_state.analysis_error=f"No se pudo completar el análisis: {type(e).__name__}: {e}"
+                st.session_state.analysis_status=""
             finally: shutil.rmtree(case_dir,ignore_errors=True)
 
 if st.session_state.analysis_error:
