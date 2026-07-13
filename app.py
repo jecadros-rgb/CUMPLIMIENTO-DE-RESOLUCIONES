@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-8"
+APP_VERSION = "2026.07.13-9"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -489,7 +489,7 @@ def calculate_due(notification: str, context: str) -> tuple[str,str] | None:
         if "habil" not in normalized:
             raise ValueError("no se identificó si el plazo principal se computa en días hábiles")
         days=quantity
-        term=f"{days} días hábiles"
+        term="un (1) día hábil" if days==1 else f"{days} días hábiles"
         holidays_book=pd.read_excel(FUENTES/"CONTADOR DE PLAZOS - TRASU 2026.xlsx",sheet_name="No laborables (2)",header=None)
         if holidays_book.shape[1] < 2: raise ValueError("la hoja No laborables (2) no contiene la columna Lima")
         holidays=pd.to_datetime(holidays_book.iloc[:,1],dayfirst=True,errors="coerce").dropna().dt.normalize().unique()
@@ -571,7 +571,7 @@ def ai_evaluate(payload: dict[str,Any]) -> dict[str,Any]:
     template="PLANTILLAS cumplimiento.docx" if payload["tipo_acto"]=="Resolución TRASU" else "PLANTILLAS DENUNCIAS ACTUALIZADAS.docx"
     case_context=json.dumps(payload,ensure_ascii=False)
     sources=legal_sources(case_context,template)
-    extraction_schema={"acto":{"numero":"","fecha":"","mandato_textual":""},"obligacion_extraida_parte_resolutiva":{"texto":"","articulos_numerales":[],"plazo_principal_textual":""},"obligaciones_accesorias_excluidas":[{"texto":"","plazo":"","motivo_exclusion":""}],"obligaciones":[{"componente":"","periodo":"","plazo_expreso":"","prueba_exigible":""}],"medios_probatorios":[{"documento":"","fecha":"","hecho_acreditado":"","cita":"","estado":"ejecutado|programado|en_curso|no_acreditado"}],"matriz_cumplimiento":[{"componente":"","estado":"acreditado|parcial|no_acreditado","sustento":""}],"datos_no_identificados":[]}
+    extraction_schema={"acto":{"numero":"","fecha":"","mandato_textual":""},"obligacion_extraida_parte_resolutiva":{"texto":"","articulos_numerales":[],"plazo_principal_textual":""},"obligaciones_accesorias_excluidas":[{"texto":"","plazo":"","motivo_exclusion":""}],"obligaciones":[{"componente":"","periodo":"","plazo_expreso":"","prueba_exigible":""}],"medios_probatorios":[{"documento":"","fecha_documento":"","fecha_ejecucion_acreditada":"","fuente_fecha_ejecucion":"","hecho_acreditado":"","cita":"","estado":"ejecutado|condicion_no_configurada|programado|en_curso|no_acreditado"}],"matriz_cumplimiento":[{"componente":"","estado":"acreditado|parcial|no_acreditado","sustento":""}],"datos_no_identificados":[]}
     extraction_system="""Actúa como extractor jurídico OSIPTEL. Separa hechos de conclusiones.
 
 REGLA DE ORIGEN DE LA OBLIGACIÓN: si el acto es una Resolución TRASU, lee COMPLETA y CONJUNTAMENTE todos los artículos y numerales del campo parte_resolutiva_trasu. Identifica la obligación material principal relacionada con la prestación o controversia del servicio y su propio plazo, cualquiera sea el verbo o la forma jurídica empleados. La obligación y su plazo pueden estar en numerales consecutivos y no tienen que aparecer en el mismo numeral que declara fundado el reclamo. No uses listas cerradas de verbos. Copia el mandato con fidelidad y sepáralo por componentes, periodos, montos y condiciones.
@@ -581,6 +581,10 @@ REGLA OBLIGATORIA — VARIOS NUMERALES EN LA PARTE RESOLUTIVA: vincula cada plaz
 Los antecedentes y considerandos solo pueden aclarar una referencia o el alcance de un mandato ya contenido en HA RESUELTO. Nunca pueden crear, sustituir o ampliar la obligación. Las alegaciones, cartas posteriores y pruebas de ejecución tampoco pueden definirla.
 
 Para cada prueba distingue ejecución efectiva de solicitud, programación, caso abierto o gestión en curso. Una afirmación de la empresa no prueba por sí sola el hecho. Cita el documento que respalda cada dato.
+
+REGLA TEMPORAL OBLIGATORIA: distingue siempre la fecha del documento o de su remisión de la fecha efectiva de ejecución que el documento acredita. Un documento posterior al vencimiento puede acreditar una ejecución anterior únicamente cuando contiene un registro histórico, fecha de operación, evento de sistema u otro dato objetivo que identifique esa ejecución anterior. Un printer que solo muestra el estado actual "activo", sin fecha histórica de reconexión o de estado, no acredita por sí solo que la obligación se ejecutó dentro del plazo. Si el medio carece de fecha efectiva, deja fecha_ejecucion_acreditada vacía; nunca copies allí automáticamente la fecha de la carta.
+
+RECONEXIÓN CONDICIONADA: si el mandato ordena reconectar solamente cuando el servicio se encuentre suspendido, verifica con evidencia fechada si la condición existía en la fecha de notificación y durante el plazo. Para concluir condicion_no_configurada debe existir un histórico o consulta fechada que acredite que el servicio ya estaba activo en esa fecha relevante. Que aparezca activo en una consulta posterior no demuestra por sí solo que nunca estuvo suspendido ni que se reconectó oportunamente.
 
 REGLA OBLIGATORIA para obligaciones de informar, brindar, remitir, entregar o trasladar información al usuario (aplica en especial a devoluciones en efectivo y comunicaciones equivalentes): una carta o correo simple no acredita por sí solo que el usuario recibió la información. Exige acuse, confirmación de recepción o entrega, cargo de notificación con fecha o equivalente. Si solo existe envío sin recepción acreditada, marca el componente como no_acreditado.
 
@@ -618,6 +622,7 @@ MÉTODO Y CONTROLES JURÍDICOS OBLIGATORIOS (en este orden):
 13. El párrafo final debe indicar obligatoriamente y de forma expresa: fecha de notificación, número y tipo de días del plazo verificado, y fecha de vencimiento. Copia esos tres datos literalmente de la ficha; está prohibido recalcularlos u omitir el plazo.
 14. Cada conclusión debe derivarse de hechos mencionados inmediatamente antes. No concluyas cumplimiento, incumplimiento, cese, reversión o subsanación si la matriz no identifica la prueba y los periodos que sustentan esa conclusión.
 15. El párrafo final debe seguir literalmente la redacción y estructura de frases de la plantilla aplicable (PLANTILLAS cumplimiento.docx o PLANTILLAS DENUNCIAS ACTUALIZADAS.docx). Está prohibido agregar datos que la plantilla no contempla en esa oración, como el número de la resolución, carta, SARA, SAR, SAP o resolución de primera instancia, salvo que la plantilla lo incluya expresamente en su texto.
+16. Está prohibido afirmar que una obligación se ejecutó "dentro del plazo" si la extracción probatoria no contiene una fecha_ejecucion_acreditada igual o anterior a la fecha de vencimiento. Distingue fecha de carta, fecha de captura y fecha histórica de ejecución. Para una reconexión condicionada, un estado "activo" consultado después del vencimiento solo acredita el estado en esa fecha posterior; no acredita la inexistencia de suspensión en la fecha de notificación ni una reconexión oportuna, salvo que el propio histórico identifique esas fechas.
 
 Devuelve JSON válido conforme al esquema y un párrafo final completo, cronológico, con obligación, pruebas por periodo, contraste, conclusión y análisis separado de subsanación."""
     user=json.dumps({"esquema":schema,"caso":{k:v for k,v in payload.items() if k!="documentos"},"extraccion_probatoria":extraction,"fuentes":sources},ensure_ascii=False)
