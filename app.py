@@ -225,8 +225,42 @@ Para documentos probatorios, resume únicamente fechas, importes, acciones efect
                 if converted.strip(): transcriptions.append(converted)
             except Exception as batch_error:
                 errors.append(f"páginas {batch[0]+1}-{batch[-1]+1}: {batch_error}")
-        if transcriptions:
-            return "\n\n".join(transcriptions)
+        combined_transcription="\n\n".join(transcriptions)
+        # Recovery used only when the ordinary OCR read a TRASU resolution but
+        # omitted its operative section.  Inspect the final pages individually,
+        # in reverse order, and stop as soon as HA RESUELTO is recovered.  This
+        # supplements the first extraction; it does not replace any other data.
+        looks_like_trasu=("trasu" in path.name.lower() or
+                          "resoluci" in path.name.lower() or
+                          "TRASU" in combined_transcription.upper())
+        if looks_like_trasu and "HA RESUELTO" not in combined_transcription.upper():
+            operative_schema={"ha_resuelto":[{
+                "numeral":"", "obligacion_o_disposicion":"", "plazo":"",
+                "destinatario":"", "es_obligacion_accesoria":False
+            }]}
+            operative_instruction="""Examina solamente esta pagina de una resolucion TRASU.
+Si contiene el titulo HA RESUELTO, SE RESUELVE o la continuacion de sus numerales, resume TODOS los numerales visibles en ha_resuelto. Conserva la relacion entre el mandato material y su plazo aunque aparezcan en numerales consecutivos. Incluye tambien las obligaciones accesorias y marcalas como tales. No transcribas parrafos completos y no inventes texto. Si esta pagina no contiene parte resolutiva, devuelve ha_resuelto como lista vacia. Devuelve solo JSON conforme al esquema."""
+            recovery_errors=[]
+            # Official TRASU resolutions normally place HA RESUELTO near the end.
+            # Search up to the final 12 pages so this works for future documents,
+            # not for one fixed page number or expediente.
+            for index in reversed(indices[-12:]):
+                try:
+                    source.seek(index)
+                    image=source.convert("RGB"); image.thumbnail((1800,1800))
+                    buf=io.BytesIO(); image.save(buf,format="JPEG",quality=84,optimize=True)
+                    content=[operative_instruction+"\nESQUEMA: "+json.dumps(operative_schema,ensure_ascii=False),
+                             f"Pagina {index+1} de {total}",
+                             types.Part.from_bytes(data=buf.getvalue(),mime_type="image/jpeg")]
+                    raw=gemini_text("Extrae de forma estructurada la parte resolutiva visible; no hagas una transcripcion literal extensa.",content,json_mode=True)
+                    recovered=facts_text(raw)
+                    if "HA RESUELTO" in recovered.upper():
+                        combined_transcription=(combined_transcription+"\n\n"+recovered).strip()
+                        break
+                except Exception as recovery_error:
+                    recovery_errors.append(f"pagina {index+1}: {recovery_error}")
+        if combined_transcription:
+            return combined_transcription
         # Second route: let the Files API ingest the original TIFF. This avoids
         # Pillow/libtiff decoder limitations that affect some official scans.
         try:
