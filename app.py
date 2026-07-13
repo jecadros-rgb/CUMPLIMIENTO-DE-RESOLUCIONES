@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-14"
+APP_VERSION = "2026.07.13-15"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -610,6 +610,18 @@ def normalize_legal_paragraph(paragraph: str, ficha: dict[str,Any], resultado: s
                 ";",text,flags=re.I)
             text=re.sub(r";\s*;",";",text)
             text=re.sub(r"\s+([,;:.])",r"\1",text)
+            # Sentence-level fallback: reject the whole contaminated sentence,
+            # regardless of whether Gemini writes "quedando", "al quedar" or
+            # another grammatical variant.
+            clean_sentences=[]
+            for sentence in re.split(r"(?<=[.!?])\s+",text):
+                folded_sentence=unicodedata.normalize("NFD",sentence.lower())
+                folded_sentence="".join(c for c in folded_sentence if unicodedata.category(c)!="Mn")
+                wrong_period_language=(
+                    any(k in folded_sentence for k in ("periodo","meses")) and
+                    any(k in folded_sentence for k in ("registro y activacion","descuento","beneficio recurrente","nota de credito","importe","monto")))
+                if not wrong_period_language: clean_sentences.append(sentence)
+            text=" ".join(clean_sentences)
     # A completed paragraph must never jump from an empty "En consecuencia"
     # directly to subsanation. Restore the missing conclusion from the locked
     # evaluation result without asking the model to redraft anything.
@@ -653,6 +665,8 @@ REGLA TEMPORAL OBLIGATORIA: distingue siempre la fecha del documento o de su rem
 
 RECONEXIÓN CONDICIONADA: si el mandato ordena reconectar solamente cuando el servicio se encuentre suspendido, verifica con evidencia fechada si la condición existía en la fecha de notificación y durante el plazo. Para concluir condicion_no_configurada debe existir un histórico o consulta fechada que acredite que el servicio ya estaba activo en esa fecha relevante. Que aparezca activo en una consulta posterior no demuestra por sí solo que nunca estuvo suspendido ni que se reconectó oportunamente.
 
+INVENTARIO DE EVIDENCIA: distingue entre un medio no presentado y un medio presentado cuyo contenido no acredita el hecho o cuya fecha no es verificable. Si un archivo, índice o página identifica expresamente un "Histórico de cortes y reconexiones", "Consulta del estado del servicio" o printer equivalente, regístralo como presentado y está prohibido afirmar que la empresa "no lo remitió". Si sus datos no muestran una fecha útil, indica con precisión que fue presentado pero no permite verificar temporalmente la reconexión.
+
 REGLA OBLIGATORIA para obligaciones de informar, brindar, remitir, entregar o trasladar información al usuario (aplica en especial a devoluciones en efectivo y comunicaciones equivalentes): una carta o correo simple no acredita por sí solo que el usuario recibió la información. Exige acuse, confirmación de recepción o entrega, cargo de notificación con fecha o equivalente. Si solo existe envío sin recepción acreditada, marca el componente como no_acreditado.
 
 EXCEPCIÓN OBLIGATORIA — AJUSTES, ANULACIONES O DESCUENTOS EN LA FACTURACIÓN: cuando la obligación consiste en ajustar, anular o descontar un importe en la facturación (no en devolver dinero en efectivo), la ejecución se acredita con la captura de pantalla del sistema o el histórico del estado de cuenta que muestre que el ajuste coincide con el importe ordenado por el TRASU, conforme a los criterios de la materia "Facturación y cobro". En estos casos NO se exige acreditar que el usuario recibió una notificación o carta sobre el ajuste; dicha comunicación, si existe, es evidencia adicional pero no condición de cumplimiento. No confundas la obligación de ajustar la facturación con una obligación de informar al usuario.
@@ -691,6 +705,7 @@ MÉTODO Y CONTROLES JURÍDICOS OBLIGATORIOS (en este orden):
 15. El párrafo final debe seguir literalmente la redacción y estructura de frases de la plantilla aplicable (PLANTILLAS cumplimiento.docx o PLANTILLAS DENUNCIAS ACTUALIZADAS.docx). Está prohibido agregar datos que la plantilla no contempla en esa oración, como el número de la resolución, carta, SARA, SAR, SAP o resolución de primera instancia, salvo que la plantilla lo incluya expresamente en su texto.
 16. Está prohibido afirmar que una obligación se ejecutó "dentro del plazo" si la extracción probatoria no contiene una fecha_ejecucion_acreditada igual o anterior a la fecha de vencimiento. Distingue fecha de carta, fecha de captura y fecha histórica de ejecución. Para una reconexión condicionada, un estado "activo" consultado después del vencimiento solo acredita el estado en esa fecha posterior; no acredita la inexistencia de suspensión en la fecha de notificación ni una reconexión oportuna, salvo que el propio histórico identifique esas fechas.
 17. CONTROL DE MATERIA: aplica únicamente criterios correspondientes a la obligación principal identificada. Si la obligación es reconectar, reactivar o acreditar operatividad, está prohibido fundamentar el análisis con reglas o expresiones sobre descuentos recurrentes, meses o periodos pendientes, importes, notas de crédito, registro o activación de beneficios, ofertas o promociones. Esas expresiones solo proceden cuando el mandato principal versa realmente sobre esas materias. Antes de redactar, elimina del razonamiento cualquier criterio perteneciente a una materia distinta.
+18. CONTROL DE EXISTENCIA DOCUMENTAL: no confundas ausencia de un documento con insuficiencia de su contenido. Si el expediente o la extracción probatoria identifica que se presentó un histórico, consulta, printer, acta o constancia, menciona que fue presentado. Solo concluye que no acredita el cumplimiento cuando falte en ese medio la fecha, el evento o el dato objetivo exigible. Nunca escribas "no remitió" o "no adjuntó" respecto de un medio que aparece en el inventario documental.
 
 Devuelve JSON válido conforme al esquema y un párrafo final completo, cronológico, con obligación, pruebas por periodo, contraste, conclusión y análisis separado de subsanación."""
     user=json.dumps({"esquema":schema,"caso":{k:v for k,v in payload.items() if k!="documentos"},"extraccion_probatoria":extraction,"fuentes":sources},ensure_ascii=False)
