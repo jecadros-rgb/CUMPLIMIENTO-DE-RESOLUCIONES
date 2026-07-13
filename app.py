@@ -241,39 +241,26 @@ Para documentos probatorios, resume únicamente fechas, importes, acciones efect
             operative_instruction="""Examina solamente esta pagina de una resolucion TRASU.
 Si contiene el titulo HA RESUELTO, SE RESUELVE o la continuacion de sus numerales, resume TODOS los numerales visibles en ha_resuelto. Conserva la relacion entre el mandato material y su plazo aunque aparezcan en numerales consecutivos. Incluye tambien las obligaciones accesorias y marcalas como tales. No transcribas parrafos completos y no inventes texto. Si esta pagina no contiene parte resolutiva, devuelve ha_resuelto como lista vacia. Devuelve solo JSON conforme al esquema."""
             recovery_errors=[]
-            # Official TRASU resolutions normally place HA RESUELTO near the end.
-            # Search up to the final 12 pages so this works for future documents,
-            # not for one fixed page number or expediente.
-            for index in reversed(indices[-12:]):
-                try:
+            # One recovery request at most. Send the central body of the final
+            # pages together instead of making one or two API calls per page.
+            # This keeps the rule general while protecting the user's quota.
+            try:
+                recovery_content=[operative_instruction+"\nESQUEMA: "+json.dumps(operative_schema,ensure_ascii=False)]
+                for index in indices[-6:]:
                     source.seek(index)
                     original=source.convert("RGB")
-                    # First try the page normally. If the provider rejects a full
-                    # legal page as RECITATION, retry only its central body. The
-                    # crop removes logos, signatures and footers while retaining
-                    # the numbered operative provisions and their deadlines.
-                    variants=[("pagina completa",original)]
                     width,height=original.size
-                    if height>800:
-                        variants.append(("cuerpo central",original.crop((0,int(height*.14),width,int(height*.90)))))
-                    recovered=""
-                    for variant_name,variant in variants:
-                        try:
-                            image=variant.copy(); image.thumbnail((1800,1800))
-                            buf=io.BytesIO(); image.save(buf,format="JPEG",quality=84,optimize=True)
-                            content=[operative_instruction+"\nESQUEMA: "+json.dumps(operative_schema,ensure_ascii=False),
-                                     f"Pagina {index+1} de {total}, {variant_name}",
-                                     types.Part.from_bytes(data=buf.getvalue(),mime_type="image/jpeg")]
-                            raw=gemini_text("Resume en campos JSON las disposiciones numeradas visibles y sus plazos; no reproduzcas literalmente el documento.",content,json_mode=True)
-                            recovered=facts_text(raw)
-                            if "HA RESUELTO" in recovered.upper(): break
-                        except Exception as variant_error:
-                            recovery_errors.append(f"pagina {index+1}, {variant_name}: {variant_error}")
-                    if "HA RESUELTO" in recovered.upper():
-                        combined_transcription=(combined_transcription+"\n\n"+recovered).strip()
-                        break
-                except Exception as recovery_error:
-                    recovery_errors.append(f"pagina {index+1}: {recovery_error}")
+                    body=original.crop((0,int(height*.12),width,int(height*.92))) if height>800 else original
+                    body.thumbnail((1500,1500))
+                    buf=io.BytesIO(); body.save(buf,format="JPEG",quality=80,optimize=True)
+                    recovery_content.append(f"Pagina {index+1} de {total}, cuerpo central")
+                    recovery_content.append(types.Part.from_bytes(data=buf.getvalue(),mime_type="image/jpeg"))
+                raw=gemini_text("Resume en JSON las disposiciones numeradas visibles y sus plazos. No reproduzcas literalmente el documento.",recovery_content,json_mode=True)
+                recovered=facts_text(raw)
+                if "HA RESUELTO" in recovered.upper():
+                    combined_transcription=(combined_transcription+"\n\n"+recovered).strip()
+            except Exception as recovery_error:
+                recovery_errors.append(f"recuperacion conjunta: {recovery_error}")
         if combined_transcription:
             return combined_transcription
         # Second route: let the Files API ingest the original TIFF. This avoids
