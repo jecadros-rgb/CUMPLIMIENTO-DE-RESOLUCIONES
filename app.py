@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-12"
+APP_VERSION = "2026.07.13-13"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -538,7 +538,7 @@ def deterministic_paragraph(result: dict[str,Any], extraction: dict[str,Any]) ->
             f"Del contraste individual de las obligaciones se obtiene: {matriz}. En consecuencia, el resultado de la evaluación es {resultado} y la clasificación es {clas}. "
             f"Respecto de la subsanación voluntaria, {subs}, conforme al cese y reversión efectivamente acreditados en el expediente.")
 
-def normalize_legal_paragraph(paragraph: str, ficha: dict[str,Any]) -> str:
+def normalize_legal_paragraph(paragraph: str, ficha: dict[str,Any], resultado: str="") -> str:
     """Enforce template wording and dd/mm/yyyy dates on every generation route."""
     text=str(paragraph or "").strip()
     months={"enero":"01","febrero":"02","marzo":"03","abril":"04","mayo":"05","junio":"06",
@@ -587,6 +587,20 @@ def normalize_legal_paragraph(paragraph: str, ficha: dict[str,Any]) -> str:
                 ";",text,flags=re.I)
             text=re.sub(r";\s*;",";",text)
             text=re.sub(r"\s+([,;:.])",r"\1",text)
+    # A completed paragraph must never jump from an empty "En consecuencia"
+    # directly to subsanation. Restore the missing conclusion from the locked
+    # evaluation result without asking the model to redraft anything.
+    result_key=unicodedata.normalize("NFD",str(resultado or "").lower())
+    result_key="".join(c for c in result_key if unicodedata.category(c)!="Mn")
+    if result_key=="incumplio":
+        conclusion="En consecuencia, al no haberse acreditado la ejecución oportuna del mandato, se habría configurado la infracción. Asimismo"
+    elif result_key=="cumplio":
+        conclusion="En consecuencia, se acreditó el cumplimiento oportuno del mandato. Asimismo"
+    elif result_key=="inejecutable":
+        conclusion="En consecuencia, se determinó que el mandato era inejecutable. Asimismo"
+    else:
+        conclusion="En consecuencia, no fue posible establecer una conclusión definitiva. Asimismo"
+    text=re.sub(r"\bEn\s+consecuencia\s*[;,.]?\s*Asimismo\b",conclusion,text,flags=re.I)
     return text
 
 def ai_evaluate(payload: dict[str,Any]) -> dict[str,Any]:
@@ -728,14 +742,14 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
     half=len(paragraph)//2
     if len(paragraph)%2==0 and paragraph[:half]==paragraph[half:]:
         paragraph=paragraph[:half].strip()
-    result["parrafo_final"]=normalize_legal_paragraph(paragraph,result.get("ficha",{}))
+    result["parrafo_final"]=normalize_legal_paragraph(paragraph,result.get("ficha",{}),result.get("resultado",""))
     return result
 
 def regenerate_paragraph(result: dict[str,Any]) -> str:
     context={"ficha":result.get("ficha",{}),"evaluacion_juridica":result.get("evaluacion_juridica",{}),"resultado":result.get("resultado"),"subsanacion_voluntaria":result.get("subsanacion_voluntaria"),"clasificacion":result.get("clasificacion"),"datos_pendientes":result.get("datos_pendientes",[]),"instrucciones":INSTRUCCIONES.read_text("utf-8",errors="ignore")[:40000]}
     response=gemini_text("Regenera únicamente el párrafo jurídico final con los datos aportados. Usa todas las fechas exclusivamente en formato dd/mm/aaaa. Si es TRASU, inicia con 'La Resolución TRASU fue notificada el dd/mm/aaaa' y no incluyas el número de resolución ni sustituyas la notificación por la emisión. No inventes ni completes faltantes. Devuelve JSON {parrafo_final:string}.",json.dumps(context,ensure_ascii=False),json_mode=True)
     paragraph=parse_json_response(response)["parrafo_final"]
-    return normalize_legal_paragraph(paragraph,result.get("ficha",{}))
+    return normalize_legal_paragraph(paragraph,result.get("ficha",{}),result.get("resultado",""))
 
 def to_row(result: dict, documents: list[str]) -> dict:
     f=result.get("ficha",{}); e=result.get("evaluacion_juridica",{})
