@@ -347,8 +347,10 @@ def identify_exact_expediente(context: str) -> str | None:
 
 def parse_trasu_name(names: str) -> str | None:
     compact=re.sub(r"[^A-Z0-9]","",names.upper())
-    match=re.search(r"(\d{7})(20\d{2})TRASUSTRA",compact)
-    return f"{match.group(1)}-{match.group(2)}/TRASU/ST-RA" if match else None
+    match=re.search(r"(\d{7})(20\d{2})TRASU(STRA|STRQJ)",compact)
+    if not match: return None
+    suffix="ST-RA" if match.group(3)=="STRA" else "ST-RQJ"
+    return f"{match.group(1)}-{match.group(2)}/TRASU/{suffix}"
 
 def source_text(name: str, limit=50000) -> str:
     return read_file(FUENTES/name)[:limit]
@@ -573,6 +575,11 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
     if not str(result.get("parrafo_final","")).strip():
         result["parrafo_final"]=deterministic_paragraph(result,extraction)
     paragraph=str(result.get("parrafo_final","")).strip()
+    if result.get("ficha",{}).get("tipo_acto")=="Resolución TRASU":
+        # The applicable template starts with "La Resolución TRASU" and does
+        # not reproduce the identifying number in the final paragraph.
+        paragraph=re.sub(r"^La\s+Resoluci[oó]n(?:\s+TRASU)?\s+(?:N(?:ro\.?|[.°º])?\s*)?[0-9][A-Z0-9./-]*",
+                         "La Resolución TRASU",paragraph,flags=re.I)
     # The templates never cite the act's identifying number; strip it if the model added it anyway.
     numero_acto=str(result.get("ficha",{}).get("numero_acto","")).strip()
     if numero_acto and numero_acto.lower() not in {"no identificado","pendiente de verificación","pendiente de verificacion"}:
@@ -657,13 +664,15 @@ if analyze:
                     raise ValueError("No se pudo extraer texto de los archivos del expediente"+(f" (falló la lectura de: {', '.join(failed_docs)})" if failed_docs else ""))
                 st.session_state.analysis_status="Documentos leídos; verificando expediente y plazo"
                 combined="\n\n".join(f"### {n}\n{t}" for n,t in texts.items())
-                document_types=[classify(n,t) for n,t in texts.items()]; tipo=next((x for x in document_types if x!="No identificado"),"No identificado")
+                document_types=[classify(n,t) for n,t in texts.items()]
+                priority=["Resolución TRASU","SARA","SAR","SAP","Denuncia","Carta","Resolución de primera instancia"]
+                tipo=next((candidate for candidate in priority if candidate in document_types),"No identificado")
                 resolutive=extract_resolutive_part(texts) if tipo=="Resolución TRASU" else None
                 st.session_state["debug_resolutivo"]=resolutive
                 if tipo=="Resolución TRASU" and not resolutive:
                     raise ValueError("No se identificó la sección HA RESUELTO completa; no es posible establecer la obligación principal sin esa sección"+(f". Detalle de lectura: {failed_details}" if failed_details else ""))
                 principal_data=extract_trasu_mandate_and_term(resolutive) if resolutive else {}
-                searchable="\n".join(u.name for u in uploads)
+                searchable="\n".join(u.name for u in uploads)+"\n"+combined
                 expediente=parse_trasu_name(searchable) or identify_exact_expediente(searchable) or "No identificado"
                 notice=None; due=None; term=None
                 if tipo=="Resolución TRASU":
