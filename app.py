@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-11"
+APP_VERSION = "2026.07.13-12"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -577,6 +577,13 @@ def normalize_legal_paragraph(paragraph: str, ficha: dict[str,Any]) -> str:
             # filter. Such clauses are impossible in a reconnection analysis.
             text=re.sub(
                 r"[,;]\s*(?:al\s+haber\s+)?(?:quedando|existiendo)?\s*(?:periodos?|meses?)\b[^.;]*?(?:descuent\w*|benefici\w*|importes?|montos?|registro\s+y\s+activaci[oó]n)[^.;]*[;.]?",
+                ";",text,flags=re.I)
+            text=re.sub(
+                r",\s*toda\s+vez\s+que,?\s*(?:al\s+)?(?:haber\s+)?(?:quedar|quedando|existir|existiendo)\s+(?:periodos?|meses?)\b[^.]*?registro\s+y\s+activaci[oó]n[^.]*\.",
+                ", toda vez que no existe una consulta o registro histórico con fecha objetiva que acredite que el servicio ya estaba activo o fue reconectado dentro del plazo otorgado.",
+                text,flags=re.I)
+            text=re.sub(
+                r"[,;]\s*(?:al\s+)?(?:haber\s+)?(?:quedar|quedando|existir|existiendo)\s+(?:periodos?|meses?)\b[^.]*?registro\s+y\s+activaci[oó]n[^.]*[.;]?",
                 ";",text,flags=re.I)
             text=re.sub(r";\s*;",";",text)
             text=re.sub(r"\s+([,;:.])",r"\1",text)
