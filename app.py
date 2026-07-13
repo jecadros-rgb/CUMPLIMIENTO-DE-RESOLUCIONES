@@ -77,15 +77,20 @@ def gemini_text(system: str, user: Any, json_mode: bool=False) -> str:
     # daily quota than 3.5-flash, so prefer it in every call, not only OCR.
     models=("gemini-3.1-flash-lite","gemini-3.5-flash")
     for model in models:
-        try:
-            response=client.models.generate_content(model=model,contents=user,config=config)
-            candidates=response.candidates or []
-            finish=str(candidates[0].finish_reason) if candidates else "SIN_CANDIDATOS"
-            text=response.text if candidates and candidates[0].content and candidates[0].content.parts else None
-            if not text: raise RuntimeError(f"El modelo {model} no devolvió contenido utilizable (motivo: {finish}).")
-            return text
-        except Exception as e:
-            errors.append(f"{model}: {e}")
+        # RECITATION is a documented, occasionally random Gemini safety trip that
+        # can fire even on the user's own official documents; retrying the same
+        # model a couple of times often succeeds where the first attempt didn't.
+        for attempt in range(3):
+            try:
+                response=client.models.generate_content(model=model,contents=user,config=config)
+                candidates=response.candidates or []
+                finish=str(candidates[0].finish_reason) if candidates else "SIN_CANDIDATOS"
+                text=response.text if candidates and candidates[0].content and candidates[0].content.parts else None
+                if not text: raise RuntimeError(f"El modelo {model} no devolvió contenido utilizable (motivo: {finish}).")
+                return text
+            except Exception as e:
+                errors.append(f"{model} (intento {attempt+1}): {e}")
+                if "RECITATION" not in str(e): break
     raise RuntimeError(" | ".join(errors))
 
 def parse_json_response(text: str) -> Any:
