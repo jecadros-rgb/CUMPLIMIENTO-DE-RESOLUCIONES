@@ -176,7 +176,13 @@ def vision_ocr(path: Path) -> str:
         from PIL import Image, ImageSequence
         source=Image.open(path)
         pages=[]
-        for i,frame in enumerate(list(ImageSequence.Iterator(source))[:20]):
+        # IMPORTANT: do not wrap this in list(...) first. ImageSequence.Iterator
+        # re-seeks the SAME underlying image object on every step; materializing
+        # a list before converting each frame leaves every entry pointing at the
+        # last frame's data. Convert to RGB immediately, inside the loop, so each
+        # frame's pixels are captured before the iterator advances.
+        for i,frame in enumerate(ImageSequence.Iterator(source)):
+            if i>=20: break
             image=frame.convert("RGB"); image.thumbnail((2000,2000))
             buf=io.BytesIO(); image.save(buf,format="JPEG",quality=90)
             part=types.Part.from_bytes(data=buf.getvalue(),mime_type="image/jpeg")
