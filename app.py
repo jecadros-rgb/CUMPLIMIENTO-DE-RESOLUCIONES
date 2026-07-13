@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-21"
+APP_VERSION = "2026.07.13-22"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -101,6 +101,35 @@ def parse_json_response(text: str) -> Any:
         cleaned=re.sub(r"^```[a-zA-Z]*\n?","",cleaned)
         cleaned=re.sub(r"```\s*$","",cleaned).strip()
     return json.JSONDecoder().raw_decode(cleaned)[0]
+
+def json_object(value: Any, preferred_keys: tuple[str,...]=()) -> dict[str,Any]:
+    """Recover a JSON object from harmless model wrappers without another API request."""
+    current=value
+    for _ in range(4):
+        if isinstance(current,dict):
+            for key in preferred_keys:
+                nested=current.get(key)
+                if isinstance(nested,dict):
+                    current=nested
+                    break
+            else:
+                return current
+            continue
+        if isinstance(current,list):
+            dictionaries=[item for item in current if isinstance(item,dict)]
+            if not dictionaries: return {}
+            # Gemini occasionally wraps the requested object in a one-element
+            # array. Prefer the object containing the expected top-level keys.
+            expected=set(preferred_keys)|{"acto","obligaciones","medios_probatorios","ficha",
+                                          "evaluacion_juridica","resultado","parrafo_final"}
+            current=max(dictionaries,key=lambda item:len(expected & set(item)))
+            continue
+        if isinstance(current,str):
+            try: current=parse_json_response(current)
+            except Exception: return {}
+            continue
+        return {}
+    return current if isinstance(current,dict) else {}
 
 def fuente_status() -> tuple[bool, list[str]]:
     faltan = [n for n in FUENTES_REQUERIDAS if not (FUENTES / n).is_file()]
@@ -761,22 +790,15 @@ def enforce_conditional_reconnection_timeline(result: dict[str,Any], extraction:
                 if state=="ejecutado" and notification<=event_date<=due:
                     timely_objective_proof=True; break
         if shows_active:
-            later_text=str(item.get("fecha_ejecucion_acreditada") or item.get("fecha_documento") or "").strip()
+            # A system printer without its own visible date is not dated with
+            # the enclosing letter's date. The letter date is handled below as
+            # the reference date for remitting an otherwise undated proof.
+            later_text=str(item.get("fecha_ejecucion_acreditada") or "").strip()
             later_date=pd.to_datetime(later_text,dayfirst=True,errors="coerce")
-            if pd.notna(later_date) and pd.Timestamp(later_date).normalize()>due:
+            if source_text and pd.notna(later_date) and pd.Timestamp(later_date).normalize()>due:
                 late_state_dates.append(pd.Timestamp(later_date).normalize())
     if timely_objective_proof:
         return paragraph
-
-    # If the evidence inventory omitted the document date but the paragraph
-    # identifies a later dated active-state record, preserve it as the first
-    # objectively accredited date instead of treating the execution as absent.
-    folded_paragraph=_fold_legal_text(paragraph)
-    if not late_state_dates and any(k in folded_paragraph for k in ("activo","operativo")):
-        for day,month,year in re.findall(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b",str(paragraph or "")):
-            candidate=pd.to_datetime(f"{day}/{month}/{year}",dayfirst=True,errors="coerce")
-            if pd.notna(candidate) and pd.Timestamp(candidate).normalize()>due:
-                late_state_dates.append(pd.Timestamp(candidate).normalize())
 
     result["resultado"]="Incumplió"
     result["clasificacion"]="PAS"
@@ -792,26 +814,43 @@ def enforce_conditional_reconnection_timeline(result: dict[str,Any], extraction:
         r",?\s*adjuntando\s+(?:el\s+)?documento\s+RF[-_A-Z0-9.]+(?:\.pdf)?\s+como\s+sustento",
         "",allegation,flags=re.I)
     allegation=re.sub(r"\s+([,.])",r"\1",allegation)
+    letter_date=None
+    letter_match=re.search(r"\bcarta\s+de\s+fecha\s+(\d{1,2}/\d{1,2}/\d{4})",allegation,flags=re.I)
+    if letter_match:
+        parsed_letter=pd.to_datetime(letter_match.group(1),dayfirst=True,errors="coerce")
+        if pd.notna(parsed_letter): letter_date=pd.Timestamp(parsed_letter).normalize()
     analysis_start=re.search(r"\bAl\s+respecto\b",str(paragraph or ""),flags=re.I)
     preserved_opening=str(paragraph or "")[:analysis_start.start()].strip() if analysis_start else ""
     def with_preserved_opening(analysis: str) -> str:
         return (preserved_opening+" "+analysis).strip() if preserved_opening else analysis
     notification_text=notification.strftime("%d/%m/%Y")
     due_text=due.strftime("%d/%m/%Y")
-    if late_state_dates:
-        accredited_date=min(late_state_dates).strftime("%d/%m/%Y")
+    undated_printer_with_letter=(has_system_printer and not late_state_dates and
+                                letter_date is not None and letter_date>due)
+    if late_state_dates or undated_printer_with_letter:
+        accredited_timestamp=min(late_state_dates) if late_state_dates else letter_date
+        accredited_date=accredited_timestamp.strftime("%d/%m/%Y")
         proof_subject=("los printers de los sistemas de la empresa operadora adjuntos a la carta"
                        if has_system_printer else "los medios probatorios objetivos adjuntos a la carta")
         checklist.append(
             f"Fuente probatoria: {proof_subject}; el estado activo se acredita recién el {accredited_date}, después del "
             f"vencimiento del {due_text}; corresponde ejecución fuera de plazo.")
+        if undated_printer_with_letter:
+            evidentiary_sentence=(
+                f"Ahora bien, de la revisión de {proof_subject}, se verifica que el servicio se encontraba activo y "
+                f"operativo; dado que dichos printers no consignan una fecha propia, se toma como fecha de referencia "
+                f"la carta que los remitió, esto es, el {accredited_date}. No obstante, esa fecha es posterior al "
+                f"vencimiento del {due_text}.")
+        else:
+            evidentiary_sentence=(
+                f"Ahora bien, de la revisión de {proof_subject}, se verifica que el servicio se encontraba activo y "
+                f"operativo el {accredited_date}; sin embargo, no contiene un registro histórico con una fecha anterior "
+                f"que demuestre la ejecución hasta el {due_text}.")
         return with_preserved_opening(
-                f"{allegation} Ahora bien, de la revisión de {proof_subject}, se verifica que el servicio se encontraba activo y operativo "
-                f"el {accredited_date}; sin embargo, no contiene un registro histórico con una fecha anterior que "
-                f"demuestre la ejecución hasta el {due_text}. En consecuencia, la empresa operadora acreditó la "
-                "ejecución del mandato fuera del plazo establecido, con lo cual se habría configurado la infracción. "
-                "Asimismo, no resulta aplicable el eximente de subsanación voluntaria, debido a que el mandato materia "
-                "de análisis se encuentra vinculado a una restricción del servicio cuyos efectos no pueden ser revertidos.")
+                f"{allegation} {evidentiary_sentence} En consecuencia, la empresa operadora acreditó la ejecución del "
+                "mandato fuera del plazo establecido, con lo cual se habría configurado la infracción. Asimismo, no "
+                "resulta aplicable el eximente de subsanación voluntaria, debido a que el mandato materia de análisis "
+                "se encuentra vinculado a una restricción del servicio cuyos efectos no pueden ser revertidos.")
     checklist.append(
         "Validación temporal: no existe prueba objetiva fechada que acredite que la condición no se configuró "
         "en la fecha de notificación o que la reconexión se ejecutó hasta el vencimiento.")
@@ -852,7 +891,7 @@ Los antecedentes y considerandos solo pueden aclarar una referencia o el alcance
 
 Para cada prueba distingue ejecución efectiva de solicitud, programación, caso abierto o gestión en curso. Una afirmación de la empresa no prueba por sí sola el hecho. Cita el documento que respalda cada dato.
 
-SEPARACIÓN ENTRE ALEGACIÓN Y PRUEBA OBJETIVA: una carta de descargos, como los documentos RF-T-FC, acredita la fecha y el contenido de lo afirmado por la empresa, pero no acredita por sí sola la ejecución material. Registra la carta como naturaleza=alegacion. Registra separadamente como naturaleza=medio_objetivo los printers, capturas, consultas, históricos, recibos, notas de crédito, actas u otros anexos provenientes de los sistemas o actuaciones de la empresa. El razonamiento debe decir que la empresa señaló el hecho mediante la carta y que este se verifica —cuando corresponda— en el medio objetivo adjunto; nunca denomines a la propia carta como el sustento objetivo de su afirmación.
+SEPARACIÓN ENTRE ALEGACIÓN Y PRUEBA OBJETIVA: una carta de descargos, como los documentos RF-T-FC, acredita la fecha y el contenido de lo afirmado por la empresa, pero no acredita por sí sola la ejecución material. Registra la carta como naturaleza=alegacion. Registra separadamente como naturaleza=medio_objetivo los printers, capturas, consultas, históricos, recibos, notas de crédito, actas u otros anexos provenientes de los sistemas o actuaciones de la empresa. El razonamiento debe decir que la empresa señaló el hecho mediante la carta y que este se verifica —cuando corresponda— en el medio objetivo adjunto; nunca denomines a la propia carta como el sustento objetivo de su afirmación. Si un printer o captura no muestra una fecha propia, deja fecha_ejecucion_acreditada vacía: no le atribuyas la fecha de la carta. Para el contraste temporal, la fecha de la carta que remitió ese medio sin fecha se utilizará después como fecha de referencia.
 
 REGLA TEMPORAL OBLIGATORIA: distingue siempre la fecha del documento o de su remisión de la fecha efectiva de ejecución que el documento acredita. Un documento posterior al vencimiento puede acreditar una ejecución anterior únicamente cuando contiene un registro histórico, fecha de operación, evento de sistema u otro dato objetivo que identifique esa ejecución anterior. Un printer que solo muestra el estado actual "activo", sin fecha histórica de reconexión o de estado, no acredita por sí solo que la obligación se ejecutó dentro del plazo. Si el medio carece de fecha efectiva, deja fecha_ejecucion_acreditada vacía; nunca copies allí automáticamente la fecha de la carta.
 
@@ -865,8 +904,9 @@ REGLA OBLIGATORIA para obligaciones de informar, brindar, remitir, entregar o tr
 EXCEPCIÓN OBLIGATORIA — AJUSTES, ANULACIONES O DESCUENTOS EN LA FACTURACIÓN: cuando la obligación consiste en ajustar, anular o descontar un importe en la facturación (no en devolver dinero en efectivo), la ejecución se acredita con la captura de pantalla del sistema o el histórico del estado de cuenta que muestre que el ajuste coincide con el importe ordenado por el TRASU, conforme a los criterios de la materia "Facturación y cobro". En estos casos NO se exige acreditar que el usuario recibió una notificación o carta sobre el ajuste; dicha comunicación, si existe, es evidencia adicional pero no condición de cumplimiento. No confundas la obligación de ajustar la facturación con una obligación de informar al usuario.
 
 No evalúes todavía PAS ni subsanación. Devuelve JSON conforme al esquema."""
-    extraction=parse_json_response(gemini_text(extraction_system,json.dumps({"esquema":extraction_schema,"caso":payload},ensure_ascii=False),json_mode=True)) or {}
-    if not isinstance(extraction,dict): raise ValueError("Gemini no devolvió una extracción jurídica válida")
+    extraction_raw=parse_json_response(gemini_text(extraction_system,json.dumps({"esquema":extraction_schema,"caso":payload},ensure_ascii=False),json_mode=True))
+    extraction=json_object(extraction_raw,("extraccion","extraction","resultado"))
+    if not extraction: raise ValueError("Gemini no devolvió una extracción jurídica utilizable")
     schema={"ficha":{"expediente":"","empresa_operadora":"","usuario_abonado":"","servicio":"","tipo_acto":"","numero_acto":"","fecha_notificacion_emision":"","plazo_cumplimiento":"","fecha_vencimiento":"","obligacion_principal":"","medios_probatorios":[]},"trazabilidad":[],"evaluacion_juridica":{"checklist":[],"sustento_breve":"","tipo_incumplimiento":""},"resultado":"Cumplió|Incumplió|Inejecutable","subsanacion_voluntaria":"aplica|no aplica|no corresponde","clasificacion":"PAS|NO PAS","parrafo_final":"","datos_pendientes":[]}
     system="""Eres analista jurídico senior de OSIPTEL. Usa SOLO la evidencia y fuentes entregadas. No inventes fechas, pruebas ni conclusiones. Lo faltante es 'No identificado' o 'Pendiente de verificación'.
 
@@ -902,8 +942,9 @@ MÉTODO Y CONTROLES JURÍDICOS OBLIGATORIOS (en este orden):
 
 Devuelve JSON válido conforme al esquema y un párrafo final completo, cronológico, con obligación, pruebas por periodo, contraste, conclusión y análisis separado de subsanación."""
     user=json.dumps({"esquema":schema,"caso":{k:v for k,v in payload.items() if k!="documentos"},"extraccion_probatoria":extraction,"fuentes":sources},ensure_ascii=False)
-    result=parse_json_response(gemini_text(system,user,json_mode=True)) or {}
-    if not isinstance(result,dict): raise ValueError("Gemini no devolvió una evaluación jurídica válida")
+    result_raw=parse_json_response(gemini_text(system,user,json_mode=True))
+    result=json_object(result_raw,("evaluacion","evaluation","resultado"))
+    if not result: raise ValueError("Gemini no devolvió una evaluación jurídica utilizable")
     if not isinstance(result.get("ficha"),dict): result["ficha"]={}
     if not isinstance(result.get("evaluacion_juridica"),dict): result["evaluacion_juridica"]={}
     checklist=result["evaluacion_juridica"].get("checklist")
