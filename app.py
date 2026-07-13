@@ -165,17 +165,11 @@ def read_file(path: Path) -> str:
     return ""
 
 def vision_ocr(path: Path) -> str:
-    """OCR cloud fallback for scanned images, including multi-page TIFF.
-
-    Each page is sent to the model on its own: asking for every page of a
-    multi-page TIFF in a single request made the model skim dense pages and
-    only transcribe the simplest one (e.g. only the last, mostly-blank page
-    of a 4-page legal resolution).
-    """
+    """OCR cloud fallback for scanned images, including multi-page TIFF converted to JPEG."""
     try:
         from PIL import Image, ImageSequence
         source=Image.open(path)
-        pages=[]
+        content=["Transcribe fielmente todo el texto jurídico visible en cada una de las páginas de imagen adjuntas, en orden, marcando cada una con '--- Página N ---'. No resumas, no omitas ninguna página ni inventes contenido."]
         # IMPORTANT: do not wrap this in list(...) first. ImageSequence.Iterator
         # re-seeks the SAME underlying image object on every step; materializing
         # a list before converting each frame leaves every entry pointing at the
@@ -183,14 +177,10 @@ def vision_ocr(path: Path) -> str:
         # frame's pixels are captured before the iterator advances.
         for i,frame in enumerate(ImageSequence.Iterator(source)):
             if i>=20: break
-            image=frame.convert("RGB"); image.thumbnail((2000,2000))
-            buf=io.BytesIO(); image.save(buf,format="JPEG",quality=90)
-            part=types.Part.from_bytes(data=buf.getvalue(),mime_type="image/jpeg")
-            text=gemini_text(
-                "Eres un sistema OCR jurídico preciso. Transcribe fielmente TODO el texto visible en esta página, sin resumir, sin omitir nada y sin comentarios adicionales.",
-                [part],fast=True)
-            pages.append(f"--- Página {i+1} ---\n{text}")
-        return "\n\n".join(pages)
+            image=frame.convert("RGB"); image.thumbnail((1800,1800))
+            buf=io.BytesIO(); image.save(buf,format="JPEG",quality=85)
+            content.append(types.Part.from_bytes(data=buf.getvalue(),mime_type="image/jpeg"))
+        return gemini_text("Eres un sistema OCR jurídico preciso.",content,fast=True)
     except Exception as e:
         return f"[OCR no disponible para {path.name}: {e}]"
 
