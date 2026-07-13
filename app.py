@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-5"
+APP_VERSION = "2026.07.13-6"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -479,15 +479,26 @@ def normalize_legal_paragraph(paragraph: str, ficha: dict[str,Any]) -> str:
     pattern=r"\b(\d{1,2})\s+de\s+("+"|".join(months)+r")\s+de\s+(\d{4})\b"
     text=re.sub(pattern,lambda m:f"{int(m.group(1)):02d}/{months[m.group(2).lower()]}/{m.group(3)}",text,flags=re.I)
     text=re.sub(r"\b(\d{4})-(\d{2})-(\d{2})\b",lambda m:f"{m.group(3)}/{m.group(2)}/{m.group(1)}",text)
-    if str(ficha.get("tipo_acto") or "")=="Resolución TRASU":
+    is_trasu=("TRASU" in str(ficha.get("tipo_acto") or "").upper() or
+              "TRASU" in str(ficha.get("numero_acto") or "").upper() or
+              "TRASU" in text[:180].upper())
+    if is_trasu:
         notification=str(ficha.get("fecha_notificacion_emision") or "").strip()
-        if notification and notification.lower() not in {"no identificado","pendiente de verificación","pendiente de verificacion"}:
-            # Replace the complete opening identification/date clause, regardless
-            # of whether Gemini wrote "emitida", "notificada" or added N.°.
-            text=re.sub(r"^La\s+Resoluci[oó]n.*?\s+fue\s+(?:emitida|notificada).*?(?=,|\.)",
-                        f"La Resolución TRASU fue notificada el {notification}",text,count=1,flags=re.I)
-        text=re.sub(r"^La\s+Resoluci[oó]n(?:\s+TRASU)?\s+N(?:ro\.?|[.°º])?\s*[0-9][A-Z0-9./-]*",
-                    "La Resolución TRASU",text,count=1,flags=re.I)
+        due=str(ficha.get("fecha_vencimiento") or "").strip()
+        term=str(ficha.get("plazo_cumplimiento") or "").strip()
+        obligation=str(ficha.get("obligacion_principal") or "").strip()
+        invalid={"","no identificado","pendiente de verificación","pendiente de verificacion"}
+        if notification.lower() not in invalid and due.lower() not in invalid and term.lower() not in invalid:
+            # The legal header is deterministic. Gemini may draft only the
+            # evidentiary analysis that begins with "Al respecto".
+            match=re.search(r"\bAl\s+respecto\b",text,flags=re.I)
+            tail=text[match.start():].strip() if match else ""
+            opening=(f"La Resolución TRASU fue notificada el {notification}, otorgando a la empresa operadora "
+                     f"el plazo de {term} para cumplir la obligación principal consistente en {obligation}, "
+                     f"plazo que vencía el {due}.")
+            text=opening+(" "+tail if tail else "")
+        else:
+            raise ValueError("No se puede redactar un párrafo TRASU sin notificación, plazo y vencimiento verificados")
     return text
 
 def ai_evaluate(payload: dict[str,Any]) -> dict[str,Any]:
@@ -702,7 +713,9 @@ if analyze:
                 combined="\n\n".join(f"### {n}\n{t}" for n,t in texts.items())
                 document_types=[classify(n,t) for n,t in texts.items()]
                 priority=["Resolución TRASU","SARA","SAR","SAP","Denuncia","Carta","Resolución de primera instancia"]
-                tipo=next((candidate for candidate in priority if candidate in document_types),"No identificado")
+                unmistakable_trasu=(any("TRASU" in str(n).upper() for n in texts) or
+                                    bool(re.search(r"\bTRASU\b",combined,re.I)))
+                tipo="Resolución TRASU" if unmistakable_trasu else next((candidate for candidate in priority if candidate in document_types),"No identificado")
                 resolutive=extract_resolutive_part(texts) if tipo=="Resolución TRASU" else None
                 st.session_state["debug_resolutivo"]=resolutive
                 if tipo=="Resolución TRASU" and not resolutive:
