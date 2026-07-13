@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-9"
+APP_VERSION = "2026.07.13-10"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -439,6 +439,11 @@ def relevant_excel_rules(name: str, case_context: str, limit: int=28) -> str:
     """Retrieve applicable rows instead of truncating a whole legal workbook."""
     book=pd.read_excel(FUENTES/name,sheet_name=None,dtype=str,header=None)
     query=_legal_tokens(case_context)
+    normalized_case=unicodedata.normalize("NFD",case_context.lower())
+    normalized_case="".join(c for c in normalized_case if unicodedata.category(c)!="Mn")
+    discount_case=any(k in normalized_case for k in (
+        "descuento","ajuste","facturacion","importe","nota de credito",
+        "oferta","promocion","beneficio recurrente"))
     ranked=[]
     for sheet,df in book.items():
         for idx,row in df.fillna("").iterrows():
@@ -448,12 +453,17 @@ def relevant_excel_rules(name: str, case_context: str, limit: int=28) -> str:
             tokens=_legal_tokens(line)
             score=len(query & tokens)
             low=line.lower()
-            # Rules that govern every case must never disappear from context.
+            # Only truly transversal rules are boosted for every matter.
+            # Discount/programming rules are boosted exclusively when the case
+            # itself concerns billing, adjustments, offers or promotions.
             general=any(k in low for k in (
                 "cese total","reversión total","subsanación voluntaria",
                 "análisis por cada mandato","conclusión es por resolución",
-                "cumplimiento parcial","registro y activación de los descuentos",
-                "descuento recurrente","programación","no se cuente con ello, hay infracción"))
+                "cumplimiento parcial"))
+            discount_rule=any(k in low for k in (
+                "registro y activación de los descuentos","descuento recurrente",
+                "ajuste recurrente","meses pendientes","meses restantes"))
+            general=general or (discount_case and discount_rule)
             if general: score+=100
             if score: ranked.append((score,sheet,int(idx)+1,line))
     ranked.sort(key=lambda x:(-x[0],x[1],x[2]))
@@ -623,6 +633,7 @@ MÉTODO Y CONTROLES JURÍDICOS OBLIGATORIOS (en este orden):
 14. Cada conclusión debe derivarse de hechos mencionados inmediatamente antes. No concluyas cumplimiento, incumplimiento, cese, reversión o subsanación si la matriz no identifica la prueba y los periodos que sustentan esa conclusión.
 15. El párrafo final debe seguir literalmente la redacción y estructura de frases de la plantilla aplicable (PLANTILLAS cumplimiento.docx o PLANTILLAS DENUNCIAS ACTUALIZADAS.docx). Está prohibido agregar datos que la plantilla no contempla en esa oración, como el número de la resolución, carta, SARA, SAR, SAP o resolución de primera instancia, salvo que la plantilla lo incluya expresamente en su texto.
 16. Está prohibido afirmar que una obligación se ejecutó "dentro del plazo" si la extracción probatoria no contiene una fecha_ejecucion_acreditada igual o anterior a la fecha de vencimiento. Distingue fecha de carta, fecha de captura y fecha histórica de ejecución. Para una reconexión condicionada, un estado "activo" consultado después del vencimiento solo acredita el estado en esa fecha posterior; no acredita la inexistencia de suspensión en la fecha de notificación ni una reconexión oportuna, salvo que el propio histórico identifique esas fechas.
+17. CONTROL DE MATERIA: aplica únicamente criterios correspondientes a la obligación principal identificada. Si la obligación es reconectar, reactivar o acreditar operatividad, está prohibido fundamentar el análisis con reglas o expresiones sobre descuentos recurrentes, meses o periodos pendientes, importes, notas de crédito, registro o activación de beneficios, ofertas o promociones. Esas expresiones solo proceden cuando el mandato principal versa realmente sobre esas materias. Antes de redactar, elimina del razonamiento cualquier criterio perteneciente a una materia distinta.
 
 Devuelve JSON válido conforme al esquema y un párrafo final completo, cronológico, con obligación, pruebas por periodo, contraste, conclusión y análisis separado de subsanación."""
     user=json.dumps({"esquema":schema,"caso":{k:v for k,v in payload.items() if k!="documentos"},"extraccion_probatoria":extraction,"fuentes":sources},ensure_ascii=False)
