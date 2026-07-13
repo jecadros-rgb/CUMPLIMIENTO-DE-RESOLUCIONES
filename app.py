@@ -556,15 +556,20 @@ if analyze:
                         seen_hashes.add(digest); unique_paths.append(p)
                 paths=unique_paths
                 texts={p.name:read_file(p) for p in paths if p.suffix.lower() not in {".zip",".rar",".7z"}}
+                # A document whose OCR/reading failed must never be treated as usable
+                # content — otherwise the AI can latch onto an unrelated document and
+                # fabricate an obligation instead of honestly reporting "not found".
+                failed_docs=[n for n,t in texts.items() if str(t).startswith("[OCR no disponible") or str(t).startswith("[Error al leer")]
+                for n in failed_docs: texts[n]=""
                 if not texts or not any(str(x).strip() for x in texts.values()):
-                    raise ValueError("No se pudo extraer texto de los archivos del expediente.")
+                    raise ValueError("No se pudo extraer texto de los archivos del expediente"+(f" (falló la lectura de: {', '.join(failed_docs)})" if failed_docs else ""))
                 st.session_state.analysis_status="Documentos leídos; verificando expediente y plazo"
                 combined="\n\n".join(f"### {n}\n{t}" for n,t in texts.items())
                 document_types=[classify(n,t) for n,t in texts.items()]; tipo=next((x for x in document_types if x!="No identificado"),"No identificado")
                 resolutive=extract_resolutive_part(texts) if tipo=="Resolución TRASU" else None
                 st.session_state["debug_resolutivo"]=resolutive
                 if tipo=="Resolución TRASU" and not resolutive:
-                    raise ValueError("No se identificó la parte resolutiva que declara fundado el reclamo; no es posible establecer la obligación sin esa sección")
+                    raise ValueError("No se identificó la parte resolutiva que declara fundado el reclamo; no es posible establecer la obligación sin esa sección"+(f" (no se pudo leer: {', '.join(failed_docs)})" if failed_docs else ""))
                 searchable="\n".join(u.name for u in uploads)
                 expediente=parse_trasu_name(searchable) or identify_exact_expediente(searchable) or "No identificado"
                 notice=None; due=None; term=None
