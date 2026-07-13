@@ -255,10 +255,22 @@ Si contiene el titulo HA RESUELTO, SE RESUELVE o la continuacion de sus numerale
                     buf=io.BytesIO(); body.save(buf,format="JPEG",quality=80,optimize=True)
                     recovery_content.append(f"Pagina {index+1} de {total}, cuerpo central")
                     recovery_content.append(types.Part.from_bytes(data=buf.getvalue(),mime_type="image/jpeg"))
-                raw=gemini_text("Resume en JSON las disposiciones numeradas visibles y sus plazos. No reproduzcas literalmente el documento.",recovery_content,json_mode=True)
-                recovered=facts_text(raw)
-                if "HA RESUELTO" in recovered.upper():
-                    combined_transcription=(combined_transcription+"\n\n"+recovered).strip()
+                # The previous working version recovered this section as plain
+                # text. JSON extraction may legally succeed while returning an
+                # empty ha_resuelto list, so use one concise plain-text request
+                # here and normalize its numbered output under the heading.
+                recovery_content[0]="""Localiza en estas paginas la parte resolutiva de la Resolucion TRASU.
+Devuelve exclusivamente un resumen fiel con este formato:
+HA RESUELTO
+NUMERAL 1: disposicion y plazo visible
+NUMERAL 2: disposicion y plazo visible
+Incluye todos los numerales resolutivos visibles y conserva las referencias entre numerales consecutivos. No agregues antecedentes, considerandos ni hechos de otros documentos. Si no aparece ninguna parte resolutiva, responde exactamente NO_ENCONTRADO."""
+                raw=gemini_text("Lee visualmente la parte resolutiva y resume sus numerales sin copiar parrafos extensos.",recovery_content,json_mode=False)
+                normalized_raw=str(raw or "").strip()
+                if normalized_raw and "NO_ENCONTRADO" not in normalized_raw.upper() and re.search(r"\bNUMERAL\s+\w+",normalized_raw,re.I):
+                    if "HA RESUELTO" not in normalized_raw.upper():
+                        normalized_raw="HA RESUELTO\n"+normalized_raw
+                    combined_transcription=(combined_transcription+"\n\n"+normalized_raw).strip()
             except Exception as recovery_error:
                 recovery_errors.append(f"recuperacion conjunta: {recovery_error}")
         if combined_transcription:
