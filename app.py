@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-16"
+APP_VERSION = "2026.07.13-17"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -715,6 +715,62 @@ def normalize_legal_paragraph(paragraph: str, ficha: dict[str,Any], resultado: s
     text=re.sub(r"\bEn\s+consecuencia\s*[;,.]?\s*Asimismo\b",conclusion,text,flags=re.I)
     return text
 
+def enforce_conditional_reconnection_timeline(result: dict[str,Any], extraction: dict[str,Any],
+                                              paragraph: str, sources: dict[str,str]) -> str:
+    """Reject the inference that a later active state proves the earlier condition or timely execution."""
+    ficha=result.get("ficha") if isinstance(result.get("ficha"),dict) else {}
+    obligation=_fold_legal_text(ficha.get("obligacion_principal"))
+    selected_matter=str(sources.get("materia_criterios_seleccionada") or "")
+    conditional_reconnection=(
+        selected_matter=="Corte o Baja Injustificada" and
+        any(k in obligation for k in ("reconect","reactiv","restablec")) and
+        any(k in obligation for k in ("si ","suspend")))
+    if not conditional_reconnection:
+        return paragraph
+    try:
+        notification=parse_excel_date(ficha.get("fecha_notificacion_emision")).normalize()
+        due=parse_excel_date(ficha.get("fecha_vencimiento")).normalize()
+    except Exception:
+        return paragraph
+
+    timely_objective_proof=False
+    for item in (extraction.get("medios_probatorios") or []):
+        if not isinstance(item,dict): continue
+        state=_fold_legal_text(item.get("estado"))
+        date_text=str(item.get("fecha_ejecucion_acreditada") or "").strip()
+        source_text=str(item.get("fuente_fecha_ejecucion") or item.get("cita") or "").strip()
+        if state not in {"ejecutado","condicion_no_configurada"} or not date_text or not source_text:
+            continue
+        event_date=pd.to_datetime(date_text,dayfirst=True,errors="coerce")
+        if pd.isna(event_date): continue
+        event_date=pd.Timestamp(event_date).normalize()
+        if state=="condicion_no_configurada" and event_date==notification:
+            timely_objective_proof=True; break
+        if state=="ejecutado" and notification<=event_date<=due:
+            timely_objective_proof=True; break
+    if timely_objective_proof:
+        return paragraph
+
+    result["resultado"]="Incumplió"
+    result["clasificacion"]="PAS"
+    result["subsanacion_voluntaria"]="no aplica"
+    checklist=result.setdefault("evaluacion_juridica",{}).setdefault("checklist",[])
+    checklist.append(
+        "Validación temporal: no existe prueba objetiva fechada que acredite que la condición no se configuró "
+        "en la fecha de notificación o que la reconexión se ejecutó hasta el vencimiento.")
+    respect=re.search(r"\bAl\s+respecto\b.*?\.(?=\s+[A-ZÁÉÍÓÚÑ]|$)",str(paragraph or ""),flags=re.I|re.S)
+    allegation=respect.group(0).strip() if respect else (
+        "Al respecto, la empresa operadora señaló que el servicio se encontraba activo y operativo.")
+    notification_text=notification.strftime("%d/%m/%Y")
+    due_text=due.strftime("%d/%m/%Y")
+    return (f"{allegation} Ahora bien, dicho medio acredita únicamente el estado del servicio en la fecha de "
+            f"su consulta o comunicación, pero no contiene un registro histórico con fecha objetiva que demuestre que "
+            f"el servicio ya estaba activo el {notification_text} ni que hubiese sido reconectado hasta el {due_text}. "
+            "Por tanto, un estado posterior no permite inferir que la condición del mandato no se configuró al momento "
+            "de la notificación. En consecuencia, al no haberse acreditado la ejecución oportuna del mandato, se habría "
+            "configurado la infracción. Asimismo, no resulta aplicable el eximente de subsanación voluntaria, debido a "
+            "que no se acreditó el cese total de la conducta ni la reversión integral de sus efectos.")
+
 def ai_evaluate(payload: dict[str,Any]) -> dict[str,Any]:
     if payload.get("tipo_acto")=="Resolución TRASU":
         verified_date=str(payload.get("fecha_verificada") or "").strip()
@@ -874,6 +930,7 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
     half=len(paragraph)//2
     if len(paragraph)%2==0 and paragraph[:half]==paragraph[half:]:
         paragraph=paragraph[:half].strip()
+    paragraph=enforce_conditional_reconnection_timeline(result,extraction,paragraph,sources)
     result["parrafo_final"]=normalize_legal_paragraph(paragraph,result.get("ficha",{}),result.get("resultado",""))
     return result
 
