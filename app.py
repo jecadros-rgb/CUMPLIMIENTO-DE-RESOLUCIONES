@@ -228,6 +228,33 @@ def extract_resolutive_part(documents: dict[str,str]) -> str | None:
             candidates.append(f"### {name} — CANDIDATO DE PARTE RESOLUTIVA (PÁGINAS FINALES)\n{text[-18000:]}")
     return "\n\n".join(candidates) if candidates else None
 
+def extract_trasu_mandate_and_term(resolutive: str) -> dict[str,Any]:
+    """Read HA RESUELTO as a whole and associate the principal mandate with its own term."""
+    schema={
+        "obligacion_principal":"",
+        "plazo_principal_textual":"",
+        "numero_plazo":None,
+        "tipo_plazo":"dias_habiles|dias_calendario|meses|no_identificado",
+        "numerales_fuente":[],
+        "obligaciones_accesorias_excluidas":[],
+    }
+    system="""Lee íntegramente la sección HA RESUELTO de una Resolución TRASU.
+Identifica la obligación material principal relacionada con la prestación o controversia del servicio y el plazo expresamente asociado a SU ejecución. Lee conjuntamente todos los numerales: la obligación y su plazo pueden estar en puntos consecutivos.
+No uses una lista cerrada de verbos y no exijas que el mandato esté en el mismo numeral que declara fundado el reclamo.
+Excluye las obligaciones posteriores de informar el cumplimiento al usuario, informar al TRASU, remitir constancias, acreditar comunicaciones o reportar acciones, junto con los plazos de esas obligaciones accesorias. Nunca confundas esos plazos con el plazo principal.
+Los considerandos solo pueden aclarar una referencia del mandato resolutivo; no pueden crear ni ampliar la obligación.
+Copia literalmente el plazo principal. Si no está legible, usa no_identificado; no adivines ni apliques un plazo general.
+Devuelve JSON válido conforme al esquema."""
+    raw=gemini_text(system,json.dumps({"esquema":schema,"ha_resuelto":resolutive},ensure_ascii=False),json_mode=True)
+    data=parse_json_response(raw) if raw else {}
+    if not isinstance(data,dict):
+        raise ValueError("No se pudo interpretar la sección HA RESUELTO")
+    if not str(data.get("obligacion_principal") or "").strip():
+        raise ValueError("No se pudo identificar la obligación material principal en HA RESUELTO")
+    if not str(data.get("plazo_principal_textual") or "").strip() or str(data.get("tipo_plazo") or "") == "no_identificado":
+        raise ValueError("No se pudo identificar el plazo vinculado a la obligación principal en HA RESUELTO")
+    return data
+
 def exact_notification(expediente: str) -> str | None:
     path=FUENTES/"notificaciones mayo.xlsx"
     for _,df in pd.read_excel(path,sheet_name=None,dtype=str).items():
@@ -318,27 +345,26 @@ def legal_sources(case_context: str, template: str) -> dict[str,str]:
     }
 
 def calculate_due(notification: str, context: str) -> tuple[str,str] | None:
-    """Determine the legal term without AI and reproduce Calculadora libre."""
+    """Calculate only the principal term already extracted from HA RESUELTO."""
     try:
         normalized=unicodedata.normalize("NFD",context.lower())
         normalized="".join(c for c in normalized if unicodedata.category(c)!="Mn")
         start=parse_excel_date(notification)
-        recurring_discount=("descuento" in normalized and any(k in normalized for k in (
-            "descuento recurrente","ajustes recurrentes","seis (6) meses","seis meses",
-            "por 6 meses","periodo de 6 meses","periodo total de seis",
-            "periodo de seis","meses pendientes","meses restantes")))
-        explicit=re.findall(r"(?:plazo|termino)[^.\n]{0,160}?(?:\(|\b)(\d{1,3})\)?\s*dias?\s*habiles",normalized,re.I)
-        explicit_days={int(x) for x in explicit}
-        if recurring_discount:
-            days=10
-        elif len(explicit_days)==1:
-            days=next(iter(explicit_days))
-        elif 10 in explicit_days:
-            days=10
-        elif re.search(r"(?:plazo[^.]{0,80})?(?:un\s*\(1\)|1)\s*mes",normalized):
-            return (start+pd.DateOffset(months=1)).strftime("%d/%m/%Y"),"1 mes"
-        else:
-            days=10
+        number_match=re.search(r"(?:\(|\b)(\d{1,3})\)?\s*(?:dias?|mes(?:es)?)",normalized,re.I)
+        word_numbers={"un":1,"uno":1,"dos":2,"tres":3,"cuatro":4,"cinco":5,"seis":6,
+                      "siete":7,"ocho":8,"nueve":9,"diez":10,"quince":15,"veinte":20}
+        word_match=re.search(r"\b("+"|".join(word_numbers)+r")\b\s*(?:dias?|mes(?:es)?)",normalized,re.I)
+        quantity=int(number_match.group(1)) if number_match else (word_numbers[word_match.group(1)] if word_match else None)
+        if quantity is None:
+            raise ValueError("el plazo principal no contiene una cantidad identificable")
+        if "mes" in normalized:
+            label=f"{quantity} mes"+("es" if quantity!=1 else "")
+            return (start+pd.DateOffset(months=quantity)).strftime("%d/%m/%Y"),label
+        if "calendario" in normalized or "naturales" in normalized:
+            return (start.normalize()+pd.Timedelta(days=quantity)).strftime("%d/%m/%Y"),f"{quantity} días calendario"
+        if "habil" not in normalized:
+            raise ValueError("no se identificó si el plazo principal se computa en días hábiles")
+        days=quantity
         term=f"{days} días hábiles"
         holidays_book=pd.read_excel(FUENTES/"CONTADOR DE PLAZOS - TRASU 2026.xlsx",sheet_name="No laborables (2)",header=None)
         if holidays_book.shape[1] < 2: raise ValueError("la hoja No laborables (2) no contiene la columna Lima")
@@ -382,12 +408,14 @@ def ai_evaluate(payload: dict[str,Any]) -> dict[str,Any]:
     template="PLANTILLAS cumplimiento.docx" if payload["tipo_acto"]=="Resolución TRASU" else "PLANTILLAS DENUNCIAS ACTUALIZADAS.docx"
     case_context=json.dumps(payload,ensure_ascii=False)
     sources=legal_sources(case_context,template)
-    extraction_schema={"acto":{"numero":"","fecha":"","mandato_textual":""},"obligacion_extraida_parte_resolutiva":{"texto":"","articulo_numeral":"","declara_fundado":"si|no|no_identificado"},"obligaciones":[{"componente":"","periodo":"","plazo_expreso":"","prueba_exigible":""}],"medios_probatorios":[{"documento":"","fecha":"","hecho_acreditado":"","cita":"","estado":"ejecutado|programado|en_curso|no_acreditado"}],"matriz_cumplimiento":[{"componente":"","estado":"acreditado|parcial|no_acreditado","sustento":""}],"datos_no_identificados":[]}
+    extraction_schema={"acto":{"numero":"","fecha":"","mandato_textual":""},"obligacion_extraida_parte_resolutiva":{"texto":"","articulos_numerales":[],"plazo_principal_textual":""},"obligaciones_accesorias_excluidas":[{"texto":"","plazo":"","motivo_exclusion":""}],"obligaciones":[{"componente":"","periodo":"","plazo_expreso":"","prueba_exigible":""}],"medios_probatorios":[{"documento":"","fecha":"","hecho_acreditado":"","cita":"","estado":"ejecutado|programado|en_curso|no_acreditado"}],"matriz_cumplimiento":[{"componente":"","estado":"acreditado|parcial|no_acreditado","sustento":""}],"datos_no_identificados":[]}
     extraction_system="""Actúa como extractor jurídico OSIPTEL. Separa hechos de conclusiones.
 
-REGLA DE ORIGEN DE LA OBLIGACIÓN: si el acto es una Resolución TRASU, identifica el mandato y todas sus obligaciones EXCLUSIVAMENTE en el campo parte_resolutiva_trasu suministrado. Debe provenir del artículo o numeral que declara FUNDADO el reclamo y ordena las medidas de cumplimiento. Está prohibido construir, completar o modificar la obligación usando antecedentes, considerandos, alegaciones de la empresa, cartas posteriores o pruebas de ejecución. Copia el mandato con fidelidad y luego sepáralo por componentes, periodos, montos y condiciones. Si la parte resolutiva no permite identificarlo, registra el dato como no identificado.
+REGLA DE ORIGEN DE LA OBLIGACIÓN: si el acto es una Resolución TRASU, lee COMPLETA y CONJUNTAMENTE todos los artículos y numerales del campo parte_resolutiva_trasu. Identifica la obligación material principal relacionada con la prestación o controversia del servicio y su propio plazo, cualquiera sea el verbo o la forma jurídica empleados. La obligación y su plazo pueden estar en numerales consecutivos y no tienen que aparecer en el mismo numeral que declara fundado el reclamo. No uses listas cerradas de verbos. Copia el mandato con fidelidad y sepáralo por componentes, periodos, montos y condiciones.
 
-REGLA OBLIGATORIA — VARIOS NUMERALES EN LA PARTE RESOLUTIVA: la parte resolutiva de una Resolución TRASU suele contener más de un numeral. Identifica como obligación principal EXCLUSIVAMENTE el o los numerales que ordenan la acción sustantiva vinculada a la prestación del servicio en discusión (por ejemplo: reactivar, reponer, migrar, ajustar, devolver, activar, dar de baja, entre otras similares), junto con su propio plazo expreso. IGNORA por completo, y no los registres ni como obligación principal ni como obligaciones a evaluar, los numerales que ordenan: (a) comunicar o informar al usuario sobre las acciones de cumplimiento ya ejecutadas; (b) informar o acreditar ante el TRASU el cumplimiento; o (c) cualquier otro plazo posterior de reporte o trámite formal (p. ej. cinco o diez días hábiles para informar). Esas son infracciones distintas que esta herramienta no evalúa; no las menciones como incumplimiento ni las mezcles con la obligación principal.
+REGLA OBLIGATORIA — VARIOS NUMERALES EN LA PARTE RESOLUTIVA: vincula cada plazo con la obligación concreta a la que corresponde. Evalúa solamente la ejecución material que resuelve la controversia. Excluye de la evaluación los numerales posteriores que ordenan comunicar o informar al usuario sobre el cumplimiento, informar o acreditar ante el TRASU, remitir constancias o realizar otro reporte formal, junto con sus respectivos plazos. Regístralos en obligaciones_accesorias_excluidas para conservar trazabilidad, pero nunca los mezcles con la obligación o el plazo principales ni los uses como fundamento de incumplimiento.
+
+Los antecedentes y considerandos solo pueden aclarar una referencia o el alcance de un mandato ya contenido en HA RESUELTO. Nunca pueden crear, sustituir o ampliar la obligación. Las alegaciones, cartas posteriores y pruebas de ejecución tampoco pueden definirla.
 
 Para cada prueba distingue ejecución efectiva de solicitud, programación, caso abierto o gestión en curso. Una afirmación de la empresa no prueba por sí sola el hecho. Cita el documento que respalda cada dato.
 
@@ -439,11 +467,14 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
     result["ficha"]["fecha_notificacion_emision"]=payload.get("fecha_verificada","No identificado")
     result["ficha"]["plazo_cumplimiento"]=payload.get("plazo_verificado","Pendiente de verificación")
     result["ficha"]["fecha_vencimiento"]=payload.get("fecha_vencimiento","Pendiente de verificación")
+    verified_principal=payload.get("obligacion_y_plazo_principales_verificados") or {}
     resolutive_obligation=extraction.get("obligacion_extraida_parte_resolutiva") or {}
-    if isinstance(resolutive_obligation,dict) and str(resolutive_obligation.get("texto","")).strip():
+    if isinstance(verified_principal,dict) and str(verified_principal.get("obligacion_principal","")).strip():
+        result["ficha"]["obligacion_principal"]=str(verified_principal["obligacion_principal"]).strip()
+    elif isinstance(resolutive_obligation,dict) and str(resolutive_obligation.get("texto","")).strip():
         result["ficha"]["obligacion_principal"]=str(resolutive_obligation["texto"]).strip()
     elif payload.get("tipo_acto")=="Resolución TRASU":
-        raise ValueError("La parte resolutiva fue localizada, pero no se pudo extraer el mandato que declara fundado el reclamo")
+        raise ValueError("Se leyó HA RESUELTO, pero no fue posible distinguir con seguridad la obligación principal de los deberes accesorios")
     # Deterministic legal guard: pending/programmed work is not full execution.
     statuses={str(x.get("estado","")).lower() for x in (extraction.get("medios_probatorios") or []) if isinstance(x,dict)}
     matrix={str(x.get("estado","")).lower() for x in (extraction.get("matriz_cumplimiento") or []) if isinstance(x,dict)}
@@ -569,7 +600,8 @@ if analyze:
                 resolutive=extract_resolutive_part(texts) if tipo=="Resolución TRASU" else None
                 st.session_state["debug_resolutivo"]=resolutive
                 if tipo=="Resolución TRASU" and not resolutive:
-                    raise ValueError("No se identificó la parte resolutiva que declara fundado el reclamo; no es posible establecer la obligación sin esa sección"+(f" (no se pudo leer: {', '.join(failed_docs)})" if failed_docs else ""))
+                    raise ValueError("No se identificó la sección HA RESUELTO completa; no es posible establecer la obligación principal sin esa sección"+(f" (no se pudo leer: {', '.join(failed_docs)})" if failed_docs else ""))
+                principal_data=extract_trasu_mandate_and_term(resolutive) if resolutive else {}
                 searchable="\n".join(u.name for u in uploads)
                 expediente=parse_trasu_name(searchable) or identify_exact_expediente(searchable) or "No identificado"
                 notice=None; due=None; term=None
@@ -578,12 +610,12 @@ if analyze:
                     if not notice:
                         st.session_state.analysis_error="No se encontró coincidencia exacta del expediente en notificaciones mayo.xlsx. Expediente detectado: "+expediente
                     else:
-                        deadline=calculate_due(notice,combined)
+                        deadline=calculate_due(notice,str(principal_data.get("plazo_principal_textual") or ""))
                         if deadline: due,term=deadline
                         if not deadline: st.session_state.analysis_error="No se pudo determinar el plazo o calcular el vencimiento con CONTADOR DE PLAZOS - TRASU 2026.xlsx"
                 if tipo!="Resolución TRASU" or (notice and due):
                     st.session_state.analysis_status="Aplicando instrucciones, criterios, pautas y plantillas"
-                    payload={"tipo_acto":tipo,"expediente_detectado":expediente,"fecha_verificada":notice or "No identificado","plazo_verificado":term or "Pendiente de verificación","fecha_vencimiento":due or "Pendiente de verificación","parte_resolutiva_trasu":resolutive or "No corresponde","documentos":texts}
+                    payload={"tipo_acto":tipo,"expediente_detectado":expediente,"fecha_verificada":notice or "No identificado","plazo_verificado":term or "Pendiente de verificación","fecha_vencimiento":due or "Pendiente de verificación","parte_resolutiva_trasu":resolutive or "No corresponde","obligacion_y_plazo_principales_verificados":principal_data,"documentos":texts}
                     st.session_state.result=ai_evaluate(payload); st.session_state.texts=texts
                     st.session_state.analysis_status="Evaluación completada"
             except Exception as e:
@@ -656,3 +688,4 @@ st.divider(); st.markdown("### Casos evaluados")
 if HISTORIAL.exists(): st.dataframe(pd.read_excel(HISTORIAL,dtype=str),use_container_width=True,hide_index=True)
 else: st.caption("Aún no hay evaluaciones guardadas.")
 st.caption("CumpleTRASU asiste el análisis jurídico; la revisión profesional y la integridad de las fuentes siguen siendo obligatorias.")
+
