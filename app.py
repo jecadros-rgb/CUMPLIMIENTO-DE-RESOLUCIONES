@@ -153,8 +153,10 @@ def read_file(path: Path) -> str:
         if ext in {".png",".jpg",".jpeg",".tif",".tiff",".bmp"}:
             try:
                 import pytesseract
-                from PIL import Image
-                text=pytesseract.image_to_string(Image.open(path),lang="spa")
+                from PIL import Image, ImageSequence
+                source=Image.open(path)
+                text="\n".join(pytesseract.image_to_string(frame.convert("RGB"),lang="spa")
+                               for frame in ImageSequence.Iterator(source))
                 legal_markers=("resuelve","declarar fundad","declara fundad","artículo 1","articulo 1","sentido de la resolución")
                 if text.strip() and any(x in text.lower() for x in legal_markers): return text
             except Exception: pass
@@ -163,16 +165,26 @@ def read_file(path: Path) -> str:
     return ""
 
 def vision_ocr(path: Path) -> str:
-    """OCR cloud fallback for scanned images, including TIFF converted to JPEG."""
+    """OCR cloud fallback for scanned images, including multi-page TIFF.
+
+    Each page is sent to the model on its own: asking for every page of a
+    multi-page TIFF in a single request made the model skim dense pages and
+    only transcribe the simplest one (e.g. only the last, mostly-blank page
+    of a 4-page legal resolution).
+    """
     try:
         from PIL import Image, ImageSequence
         source=Image.open(path)
-        content=["Transcribe fielmente todo el texto jurídico visible, página por página. No resumas ni inventes."]
-        for frame in list(ImageSequence.Iterator(source))[:20]:
-            image=frame.convert("RGB"); image.thumbnail((1800,1800))
-            buf=io.BytesIO(); image.save(buf,format="JPEG",quality=85)
-            content.append(types.Part.from_bytes(data=buf.getvalue(),mime_type="image/jpeg"))
-        return gemini_text("Eres un sistema OCR jurídico preciso.",content,fast=True)
+        pages=[]
+        for i,frame in enumerate(list(ImageSequence.Iterator(source))[:20]):
+            image=frame.convert("RGB"); image.thumbnail((2000,2000))
+            buf=io.BytesIO(); image.save(buf,format="JPEG",quality=90)
+            part=types.Part.from_bytes(data=buf.getvalue(),mime_type="image/jpeg")
+            text=gemini_text(
+                "Eres un sistema OCR jurídico preciso. Transcribe fielmente TODO el texto visible en esta página, sin resumir, sin omitir nada y sin comentarios adicionales.",
+                [part],fast=True)
+            pages.append(f"--- Página {i+1} ---\n{text}")
+        return "\n\n".join(pages)
     except Exception as e:
         return f"[OCR no disponible para {path.name}: {e}]"
 
