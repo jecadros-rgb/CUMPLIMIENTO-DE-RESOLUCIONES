@@ -221,7 +221,11 @@ def exact_notification(expediente: str) -> str | None:
         if "NRO_EXPEDIENTE" in cols and date_key:
             values=df[cols["NRO_EXPEDIENTE"]].fillna("").astype(str).str.strip()
             hit=df.loc[values==expediente.strip(),cols[date_key]]
-            if not hit.empty and pd.notna(hit.iloc[0]): return str(hit.iloc[0]).strip()
+            if not hit.empty and pd.notna(hit.iloc[0]):
+                raw=str(hit.iloc[0]).strip()
+                # The source column stores a full timestamp (00:00:00); keep only the date.
+                parsed=pd.to_datetime(raw,errors="coerce")
+                return parsed.strftime("%Y-%m-%d") if pd.notna(parsed) else raw
     return None
 
 def identify_exact_expediente(context: str) -> str | None:
