@@ -490,7 +490,8 @@ def excel_bytes(row: dict | None=None) -> bytes:
     return b.getvalue()
 
 for k,v in {"result":None,"docs":[],"texts":{},"notice":None,"due":None,
-            "analysis_error":None,"analysis_status":None,"upload_signature":None}.items():
+            "analysis_error":None,"analysis_status":None,"upload_signature":None,
+            "debug_resolutivo":None}.items():
     st.session_state.setdefault(k,v)
 
 left,center,right=st.columns([1.05,2.25,1.05],gap="large")
@@ -541,6 +542,7 @@ if analyze:
                 combined="\n\n".join(f"### {n}\n{t}" for n,t in texts.items())
                 document_types=[classify(n,t) for n,t in texts.items()]; tipo=next((x for x in document_types if x!="No identificado"),"No identificado")
                 resolutive=extract_resolutive_part(texts) if tipo=="Resolución TRASU" else None
+                st.session_state["debug_resolutivo"]=resolutive
                 if tipo=="Resolución TRASU" and not resolutive:
                     raise ValueError("No se identificó la parte resolutiva que declara fundado el reclamo; no es posible establecer la obligación sin esa sección")
                 searchable="\n".join(u.name for u in uploads)
@@ -565,6 +567,9 @@ if analyze:
 
 if st.session_state.analysis_error:
     st.error(st.session_state.analysis_error)
+    if st.session_state.debug_resolutivo:
+        with st.expander("Ver texto de la parte resolutiva detectada (para diagnóstico)"):
+            st.text(st.session_state.debug_resolutivo)
 elif st.session_state.analysis_status:
     st.info(st.session_state.analysis_status)
 
