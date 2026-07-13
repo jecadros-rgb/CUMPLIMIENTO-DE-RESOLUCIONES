@@ -202,8 +202,28 @@ def vision_ocr(path: Path) -> str:
                 errors.append(f"páginas {batch[0]+1}-{batch[-1]+1}: {batch_error}")
         if transcriptions:
             return "\n\n".join(transcriptions)
-        raise RuntimeError("; ".join(errors) if errors else "ningún lote produjo texto")
+        # Second route: let the Files API ingest the original TIFF. This avoids
+        # Pillow/libtiff decoder limitations that affect some official scans.
+        try:
+            client=gemini_client()
+            uploaded=client.files.upload(file=str(path))
+            prompt="Transcribe íntegramente este documento jurídico multipágina. Prioriza y copia literalmente la sección HA RESUELTO, todos sus numerales, obligaciones y plazos. No resumas ni inventes."
+            raw=gemini_text("Eres un sistema OCR jurídico preciso. Devuelve solo la transcripción fiel.",[uploaded,prompt])
+            if str(raw).strip(): return str(raw).strip()
+            errors.append("el archivo TIFF original no produjo texto")
+        except Exception as upload_error:
+            errors.append(f"lectura directa del TIFF: {upload_error}")
+        raise RuntimeError("; ".join(errors) if errors else "ningún método produjo texto")
     except Exception as e:
+        # If page decoding itself failed, still try the original file once.
+        try:
+            client=gemini_client()
+            uploaded=client.files.upload(file=str(path))
+            prompt="Transcribe este documento jurídico multipágina. Copia literalmente HA RESUELTO, sus numerales, obligaciones y plazos. No resumas ni inventes."
+            raw=gemini_text("Eres un sistema OCR jurídico preciso.",[uploaded,prompt])
+            if str(raw).strip(): return str(raw).strip()
+        except Exception as upload_error:
+            return f"[OCR no disponible para {path.name}: conversión por páginas: {e}; lectura directa: {upload_error}]"
         return f"[OCR no disponible para {path.name}: {e}]"
 
 def classify(name: str, text: str) -> str:
@@ -606,6 +626,7 @@ if analyze:
                 # content — otherwise the AI can latch onto an unrelated document and
                 # fabricate an obligation instead of honestly reporting "not found".
                 failed_docs=[n for n,t in texts.items() if str(t).startswith("[OCR no disponible") or str(t).startswith("[Error al leer")]
+                failed_details=" | ".join(str(texts[n])[:1200] for n in failed_docs)
                 for n in failed_docs: texts[n]=""
                 if not texts or not any(str(x).strip() for x in texts.values()):
                     raise ValueError("No se pudo extraer texto de los archivos del expediente"+(f" (falló la lectura de: {', '.join(failed_docs)})" if failed_docs else ""))
@@ -615,7 +636,7 @@ if analyze:
                 resolutive=extract_resolutive_part(texts) if tipo=="Resolución TRASU" else None
                 st.session_state["debug_resolutivo"]=resolutive
                 if tipo=="Resolución TRASU" and not resolutive:
-                    raise ValueError("No se identificó la sección HA RESUELTO completa; no es posible establecer la obligación principal sin esa sección"+(f" (no se pudo leer: {', '.join(failed_docs)})" if failed_docs else ""))
+                    raise ValueError("No se identificó la sección HA RESUELTO completa; no es posible establecer la obligación principal sin esa sección"+(f". Detalle de lectura: {failed_details}" if failed_details else ""))
                 principal_data=extract_trasu_mandate_and_term(resolutive) if resolutive else {}
                 searchable="\n".join(u.name for u in uploads)
                 expediente=parse_trasu_name(searchable) or identify_exact_expediente(searchable) or "No identificado"
