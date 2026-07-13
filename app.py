@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-15"
+APP_VERSION = "2026.07.13-16"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -492,10 +492,87 @@ def relevant_excel_rules(name: str, case_context: str, limit: int=28) -> str:
     selected=ranked[:limit]
     return "\n".join(f"[{name} / {s} / fila {r}] {line}" for _,s,r,line in selected)
 
-def legal_sources(case_context: str, template: str) -> dict[str,str]:
+def _fold_legal_text(value: Any) -> str:
+    text=unicodedata.normalize("NFD",str(value or "").lower())
+    return "".join(c for c in text if unicodedata.category(c)!="Mn")
+
+def _criteria_rows() -> list[dict[str,Any]]:
+    """Parse the institutional instruction while preserving each row's matter."""
+    raw=CRITERIOS_INSTRUCCION.read_text("utf-8",errors="ignore")
+    matches=list(re.finditer(r"(?ms)^FILA\s+(\d+):\s*(.*?)(?=^FILA\s+\d+:|\Z)",raw))
+    known_matters={
+        "Facturación y cobro","Calidad e idoneidad",
+        "Incumplimiento de condiciones contractuales, ofertas y promociones",
+        "Corte o Baja Injustificada","Instalación, activación o traslado del servicio",
+        "Falta de ejecución de baja o traslado del servicio","Recargas",
+        "Contratación no solicitada","Migración","Portabilidad","Todas las materias",
+        "Suspensión por uso prohibido","Activación de promoción",
+        "Devoluciones en Centros de Atención de la empresa Operadora",
+        "Portabilidad no autorizada","Cambio de número no autorizado",
+    }
+    folded_known={_fold_legal_text(x):x for x in known_matters}
+    current=""
+    rows=[]
+    for match in matches:
+        number=int(match.group(1))
+        body=re.sub(r"\s+"," ",match.group(2)).strip()
+        parts=[p.strip() for p in body.split("|")]
+        first=_fold_legal_text(parts[0] if parts else "")
+        if first in folded_known:
+            current=folded_known[first]
+        matter="Notificaciones" if number==66 else current
+        if number>=3:
+            rows.append({"fila":number,"materia":matter,"texto":body})
+    return rows
+
+def select_applicable_criteria(obligation: str) -> tuple[str,str,list[int]]:
+    """Route the verified mandate to its own matrix block before legal reasoning."""
+    rows=_criteria_rows()
+    folded=_fold_legal_text(obligation)
+    routing={
+        "Corte o Baja Injustificada":("reconect","reactiv","restablec","corte injust","baja injust","servicio suspend"),
+        "Calidad e idoneidad":("averia","calidad","idoneidad","reparar servicio","operatividad del servicio"),
+        "Incumplimiento de condiciones contractuales, ofertas y promociones":("oferta","promocion","beneficio","descuento","condicion contractual"),
+        "Facturación y cobro":("facturacion","cobro","ajustar importe","anular importe","nota de credito","estado de cuenta"),
+        "Instalación, activación o traslado del servicio":("instalar","instalacion","activar el servicio","activacion del servicio","trasladar el servicio"),
+        "Falta de ejecución de baja o traslado del servicio":("dar de baja","baja del servicio","ejecutar la baja","traslado del servicio"),
+        "Contratación no solicitada":("contratacion no solicitada","servicio no solicitado"),
+        "Migración":("migracion","migrar","cambio de plan"),
+        "Portabilidad no autorizada":("portabilidad no autorizada",),
+        "Portabilidad":("portabilidad","portar el numero"),
+        "Cambio de número no autorizado":("cambio de numero no autorizado",),
+        "Recargas":("recarga","saldo recargado"),
+        "Suspensión por uso prohibido":("suspension por uso prohibido","rentseg","imei"),
+        "Activación de promoción":("activar promocion","activacion de promocion"),
+        "Devoluciones en Centros de Atención de la empresa Operadora":("devolucion en centro","recoger devolucion","centro de atencion","devolver importe","devolucion de importe"),
+    }
+    scores=[]
+    for order,(matter,aliases) in enumerate(routing.items()):
+        score=0
+        for alias in aliases:
+            if alias in folded:
+                score+=max(2,len(alias.split()))
+        matter_tokens=_legal_tokens(matter)
+        score+=len(_legal_tokens(obligation)&matter_tokens)
+        scores.append((score,-order,matter))
+    scores.sort(reverse=True)
+    primary=scores[0][2] if scores and scores[0][0]>0 else "Todas las materias"
+    selected=[r for r in rows if r["materia"] in {primary,"Todas las materias","Notificaciones"}]
+    ids=[int(r["fila"]) for r in selected]
+    header=("Fuente consultada: criterios_evaluacion_obligatorios.txt. "
+            f"Materia seleccionada desde la obligación principal: {primary}. "
+            "Solo las filas siguientes pueden utilizarse para este razonamiento; "
+            "las filas de otras materias quedan excluidas para evitar cruces.")
+    text=header+"\n"+"\n".join(f"[FILA {r['fila']} / {r['materia']}] {r['texto']}" for r in selected)
+    return primary,text,ids
+
+def legal_sources(case_context: str, template: str, obligation: str) -> dict[str,str]:
+    matter,criteria,criteria_ids=select_applicable_criteria(obligation)
     return {
         "instrucciones":INSTRUCCIONES.read_text("utf-8",errors="ignore"),
-        "criterios_evaluacion_instruccion_obligatoria":CRITERIOS_INSTRUCCION.read_text("utf-8",errors="ignore"),
+        "materia_criterios_seleccionada":matter,
+        "filas_criterios_seleccionadas":", ".join(map(str,criteria_ids)),
+        "criterios_evaluacion_aplicables":criteria,
         "plantilla_aplicable":source_text(template,80000),
         "pautas_pas_aplicables":relevant_excel_rules("PAUTAS PAS.xlsx",case_context,26),
     }
@@ -649,7 +726,12 @@ def ai_evaluate(payload: dict[str,Any]) -> dict[str,Any]:
             raise ValueError("No se puede evaluar cumplimiento TRASU sin fecha de vencimiento calculada")
     template="PLANTILLAS cumplimiento.docx" if payload["tipo_acto"]=="Resolución TRASU" else "PLANTILLAS DENUNCIAS ACTUALIZADAS.docx"
     case_context=json.dumps(payload,ensure_ascii=False)
-    sources=legal_sources(case_context,template)
+    verified_principal=payload.get("obligacion_y_plazo_principales_verificados") or {}
+    obligation_for_criteria=(str(verified_principal.get("obligacion_principal") or "").strip()
+                             if isinstance(verified_principal,dict) else "")
+    if not obligation_for_criteria:
+        obligation_for_criteria=str(payload.get("parte_resolutiva_trasu") or "").strip()
+    sources=legal_sources(case_context,template,obligation_for_criteria)
     extraction_schema={"acto":{"numero":"","fecha":"","mandato_textual":""},"obligacion_extraida_parte_resolutiva":{"texto":"","articulos_numerales":[],"plazo_principal_textual":""},"obligaciones_accesorias_excluidas":[{"texto":"","plazo":"","motivo_exclusion":""}],"obligaciones":[{"componente":"","periodo":"","plazo_expreso":"","prueba_exigible":""}],"medios_probatorios":[{"documento":"","fecha_documento":"","fecha_ejecucion_acreditada":"","fuente_fecha_ejecucion":"","hecho_acreditado":"","cita":"","estado":"ejecutado|condicion_no_configurada|programado|en_curso|no_acreditado"}],"matriz_cumplimiento":[{"componente":"","estado":"acreditado|parcial|no_acreditado","sustento":""}],"datos_no_identificados":[]}
     extraction_system="""Actúa como extractor jurídico OSIPTEL. Separa hechos de conclusiones.
 
@@ -679,7 +761,7 @@ No evalúes todavía PAS ni subsanación. Devuelve JSON conforme al esquema."""
 
 JERARQUÍA DOCUMENTAL OBLIGATORIA:
 1. Sigue literalmente instrucciones_juridicas.txt para determinar el tipo de acto, el orden del análisis, la prueba exigible y los datos que no pueden inferirse.
-2. Aplica íntegramente criterios_evaluacion_obligatorios.txt como una INSTRUCCIÓN vinculante. Sus filas proceden literalmente de CRITERIOS DE EVALUACION DE CUMPLIMIENTO.xlsx; no son simples referencias ni ejemplos. Debes conservar el significado de PAS, NO PAS, PLAZO e INEJECUTABLE indicado en cada fila.
+2. El sistema ya consultó criterios_evaluacion_obligatorios.txt y seleccionó, desde la obligación principal, la materia y las filas aplicables. Aplica íntegramente SOLO esas filas como instrucciones vinculantes. No uses filas no seleccionadas ni conocimiento general para sustituirlas. Conserva exactamente el significado de PAS, NO PAS, PLAZO e INEJECUTABLE de cada fila.
 3. Aplica como reglas vinculantes las filas seleccionadas de PAUTAS PAS.xlsx, separando cumplimiento, razonabilidad, cese y subsanación voluntaria.
 4. Redacta con la estructura y lenguaje de PLANTILLAS cumplimiento.docx cuando sea una Resolución TRASU.
 5. Redacta con la estructura y lenguaje de PLANTILLAS DENUNCIAS ACTUALIZADAS.docx para cartas, denuncias, SAR, SARA o SAP.
@@ -689,15 +771,15 @@ JERARQUÍA DOCUMENTAL OBLIGATORIA:
 MÉTODO Y CONTROLES JURÍDICOS OBLIGATORIOS (en este orden):
 0. Determina la materia y cita en el checklist las filas concretas de criterios y pautas usadas. No uses una regla de otra materia.
 1. Evalúa cada componente y cada periodo del mandato. El cumplimiento parcial NO equivale a cumplimiento íntegro.
-2. Una solicitud, programación, ticket, caso abierto, gestión en curso o comunicación interna sobre una ejecución futura NO acredita ejecución efectiva. Exige nota de crédito, recibo ajustado, histórico aplicado u otra constancia objetiva.
-3. Si falta prueba de uno o más meses ordenados, concluye que no se acreditó la ejecución íntegra.
+2. Determina la prueba exigible y el resultado únicamente con las filas seleccionadas de la materia aplicable y con los hechos acreditados.
+3. Si el mandato contiene varios componentes, evalúa cada componente sin importar criterios de otra materia.
 4. La subsanación voluntaria exige conjuntamente cese TOTAL de la conducta y reversión INTEGRAL de todos sus efectos antes del procedimiento. Que la materia no restrinja el servicio, por sí solo, jamás basta.
-5. Si siguen periodos, montos o componentes pendientes, establece 'no aplica' para el eximente y explica la ausencia de cese total/reversión integral.
+5. Si siguen componentes pendientes, explica la ausencia de cese total o reversión integral según las pautas seleccionadas.
 6. Usa exclusivamente la fecha de vencimiento calculada y no la recalcules.
 7. Aplica las instrucciones, criterios y pautas PAS entregados, incluso si contradicen una inferencia general del modelo. La plantilla determina la estructura de redacción.
 8. Contrasta obligación por obligación con la matriz de pruebas; no generalices el resultado de un componente a los demás.
 9. Mantén separadas tres decisiones: (a) cumplimiento material dentro del plazo, (b) razonabilidad para una ejecución tardía y (c) eximente de subsanación voluntaria. No conviertas automáticamente una ejecución tardía en subsanación.
-10. En descuentos por varios meses, las notas de crédito o recibos solo acreditan los periodos que identifican. Para meses futuros exige un medio que muestre el REGISTRO Y ACTIVACIÓN efectivos de esos descuentos y su periodo. Una carta que diga que se gestionó o programó no los acredita.
+10. No traslades pruebas, frases ni conclusiones de una materia distinta de la materia seleccionada.
 11. La etiqueta NO PAS de una fila solo procede si todos los hechos descritos en esa fila están acreditados. Si faltan meses, extremos o prueba objetiva, aplica la fila específica de incumplimiento/PAS.
 12. Antes de redactar, construye el checklist con: mandato; plazo; prueba exigible; prueba existente; periodos acreditados; periodos pendientes; regla aplicada; conclusión. Si existe contradicción, prevalece la evidencia documental y la regla específica.
 13. El párrafo final debe indicar obligatoriamente y de forma expresa: fecha de notificación, número y tipo de días del plazo verificado, y fecha de vencimiento. Copia esos tres datos literalmente de la ficha; está prohibido recalcularlos u omitir el plazo.
@@ -713,6 +795,18 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
     if not isinstance(result,dict): raise ValueError("Gemini no devolvió una evaluación jurídica válida")
     if not isinstance(result.get("ficha"),dict): result["ficha"]={}
     if not isinstance(result.get("evaluacion_juridica"),dict): result["evaluacion_juridica"]={}
+    checklist=result["evaluacion_juridica"].get("checklist")
+    if not isinstance(checklist,list): checklist=[]
+    selection_note=("criterios_evaluacion_obligatorios.txt — materia: "
+                    f"{sources['materia_criterios_seleccionada']}; filas consultadas: "
+                    f"{sources['filas_criterios_seleccionadas']}.")
+    if not any("criterios_evaluacion_obligatorios.txt" in str(item) for item in checklist):
+        checklist.insert(0,selection_note)
+    result["evaluacion_juridica"]["checklist"]=checklist
+    trace=result.get("trazabilidad")
+    if not isinstance(trace,list): trace=[]
+    trace.append(selection_note)
+    result["trazabilidad"]=trace
     # Verified spreadsheet values are authoritative; the model cannot recalculate them.
     result.setdefault("ficha",{})["expediente"]=payload.get("expediente_detectado","No identificado")
     result["ficha"]["fecha_notificacion_emision"]=payload.get("fecha_verificada","No identificado")
@@ -954,4 +1048,3 @@ st.divider(); st.markdown("### Casos evaluados")
 if HISTORIAL.exists(): st.dataframe(pd.read_excel(HISTORIAL,dtype=str),use_container_width=True,hide_index=True)
 else: st.caption("Aún no hay evaluaciones guardadas.")
 st.caption("CumpleTRASU asiste el análisis jurídico; la revisión profesional y la integridad de las fuentes siguen siendo obligatorias.")
-
