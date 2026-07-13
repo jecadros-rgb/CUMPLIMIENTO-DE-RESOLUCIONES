@@ -466,11 +466,16 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
             result["parrafo_final"]=""
     if not str(result.get("parrafo_final","")).strip():
         result["parrafo_final"]=deterministic_paragraph(result,extraction)
-    # Avoid an accidental exact duplication of the generated paragraph.
     paragraph=str(result.get("parrafo_final","")).strip()
+    # The templates never cite the act's identifying number; strip it if the model added it anyway.
+    numero_acto=str(result.get("ficha",{}).get("numero_acto","")).strip()
+    if numero_acto and numero_acto.lower() not in {"no identificado","pendiente de verificación","pendiente de verificacion"}:
+        paragraph=re.sub(r"\s*N\.?[°º]\s*"+re.escape(numero_acto),"",paragraph)
+    # Avoid an accidental exact duplication of the generated paragraph.
     half=len(paragraph)//2
     if len(paragraph)%2==0 and paragraph[:half]==paragraph[half:]:
-        result["parrafo_final"]=paragraph[:half].strip()
+        paragraph=paragraph[:half].strip()
+    result["parrafo_final"]=paragraph
     return result
 
 def regenerate_paragraph(result: dict[str,Any]) -> str:
