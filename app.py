@@ -22,6 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
+APP_VERSION = "2026.07.13-4"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -60,6 +61,7 @@ div[data-testid="stFileUploader"]{border:1px dashed #2e6078;border-radius:12px;p
 .stButton>button{border-radius:9px}.stDownloadButton>button{width:100%;border-radius:9px}
 </style>""", unsafe_allow_html=True)
 st.markdown('<div class="hero"><span class="tag">OSIPTEL / TRASU</span><div class="brand">Cumple<b>TRASU</b></div><div class="sub">Evaluador Automatizado de Cumplimiento de Resoluciones</div></div>', unsafe_allow_html=True)
+st.caption(f"Versión {APP_VERSION}")
 
 def get_api_key() -> str | None:
     try: return st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
@@ -322,7 +324,9 @@ def exact_notification(expediente: str) -> str | None:
         date_key="FEC_NOT_EMP_ELE_TEXTO" if "FEC_NOT_EMP_ELE_TEXTO" in cols else ("FEC_NOT_EMP_ELE" if "FEC_NOT_EMP_ELE" in cols else None)
         if "NRO_EXPEDIENTE" in cols and date_key:
             values=df[cols["NRO_EXPEDIENTE"]].fillna("").astype(str).str.strip()
-            hit=df.loc[values==expediente.strip(),cols[date_key]]
+            target=re.sub(r"[^A-Z0-9]","",expediente.upper())
+            normalized=values.str.upper().str.replace(r"[^A-Z0-9]","",regex=True)
+            hit=df.loc[normalized==target,cols[date_key]]
             if not hit.empty and pd.notna(hit.iloc[0]):
                 raw=str(hit.iloc[0]).strip()
                 # The source column stores a full timestamp (00:00:00); keep only the date.
@@ -467,6 +471,14 @@ def deterministic_paragraph(result: dict[str,Any], extraction: dict[str,Any]) ->
             f"Respecto de la subsanación voluntaria, {subs}, conforme al cese y reversión efectivamente acreditados en el expediente.")
 
 def ai_evaluate(payload: dict[str,Any]) -> dict[str,Any]:
+    if payload.get("tipo_acto")=="Resolución TRASU":
+        verified_date=str(payload.get("fecha_verificada") or "").strip()
+        verified_due=str(payload.get("fecha_vencimiento") or "").strip()
+        invalid={"","no identificado","pendiente de verificación","pendiente de verificacion"}
+        if verified_date.lower() in invalid:
+            raise ValueError("No se puede evaluar cumplimiento TRASU sin fecha de notificación verificada")
+        if verified_due.lower() in invalid:
+            raise ValueError("No se puede evaluar cumplimiento TRASU sin fecha de vencimiento calculada")
     template="PLANTILLAS cumplimiento.docx" if payload["tipo_acto"]=="Resolución TRASU" else "PLANTILLAS DENUNCIAS ACTUALIZADAS.docx"
     case_context=json.dumps(payload,ensure_ascii=False)
     sources=legal_sources(case_context,template)
@@ -575,11 +587,14 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
     if not str(result.get("parrafo_final","")).strip():
         result["parrafo_final"]=deterministic_paragraph(result,extraction)
     paragraph=str(result.get("parrafo_final","")).strip()
-    if result.get("ficha",{}).get("tipo_acto")=="Resolución TRASU":
+    if payload.get("tipo_acto")=="Resolución TRASU":
         # The applicable template starts with "La Resolución TRASU" and does
         # not reproduce the identifying number in the final paragraph.
-        paragraph=re.sub(r"^La\s+Resoluci[oó]n(?:\s+TRASU)?\s+(?:N(?:ro\.?|[.°º])?\s*)?[0-9][A-Z0-9./-]*",
-                         "La Resolución TRASU",paragraph,flags=re.I)
+        notification=str(payload.get("fecha_verificada")).strip()
+        paragraph=re.sub(r"^La\s+Resoluci[oó]n(?:\s+TRASU)?(?:\s+N(?:ro\.?|[.°º])?\s*[0-9][A-Z0-9./-]*)?\s+fue\s+(?:emitida|notificada)(?:\s+en\s+fecha\s+no\s+identificada|\s+el\s+[^,.;]+)",
+                         f"La Resolución TRASU fue notificada el {notification}",paragraph,count=1,flags=re.I)
+        paragraph=re.sub(r"^La\s+Resoluci[oó]n(?:\s+TRASU)?\s+N(?:ro\.?|[.°º])?\s*[0-9][A-Z0-9./-]*",
+                         "La Resolución TRASU",paragraph,count=1,flags=re.I)
     # The templates never cite the act's identifying number; strip it if the model added it anyway.
     numero_acto=str(result.get("ficha",{}).get("numero_acto","")).strip()
     if numero_acto and numero_acto.lower() not in {"no identificado","pendiente de verificación","pendiente de verificacion"}:
