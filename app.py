@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-4"
+APP_VERSION = "2026.07.13-5"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -470,6 +470,26 @@ def deterministic_paragraph(result: dict[str,Any], extraction: dict[str,Any]) ->
             f"Del contraste individual de las obligaciones se obtiene: {matriz}. En consecuencia, el resultado de la evaluación es {resultado} y la clasificación es {clas}. "
             f"Respecto de la subsanación voluntaria, {subs}, conforme al cese y reversión efectivamente acreditados en el expediente.")
 
+def normalize_legal_paragraph(paragraph: str, ficha: dict[str,Any]) -> str:
+    """Enforce template wording and dd/mm/yyyy dates on every generation route."""
+    text=str(paragraph or "").strip()
+    months={"enero":"01","febrero":"02","marzo":"03","abril":"04","mayo":"05","junio":"06",
+            "julio":"07","agosto":"08","septiembre":"09","setiembre":"09","octubre":"10",
+            "noviembre":"11","diciembre":"12"}
+    pattern=r"\b(\d{1,2})\s+de\s+("+"|".join(months)+r")\s+de\s+(\d{4})\b"
+    text=re.sub(pattern,lambda m:f"{int(m.group(1)):02d}/{months[m.group(2).lower()]}/{m.group(3)}",text,flags=re.I)
+    text=re.sub(r"\b(\d{4})-(\d{2})-(\d{2})\b",lambda m:f"{m.group(3)}/{m.group(2)}/{m.group(1)}",text)
+    if str(ficha.get("tipo_acto") or "")=="Resolución TRASU":
+        notification=str(ficha.get("fecha_notificacion_emision") or "").strip()
+        if notification and notification.lower() not in {"no identificado","pendiente de verificación","pendiente de verificacion"}:
+            # Replace the complete opening identification/date clause, regardless
+            # of whether Gemini wrote "emitida", "notificada" or added N.°.
+            text=re.sub(r"^La\s+Resoluci[oó]n.*?\s+fue\s+(?:emitida|notificada).*?(?=,|\.)",
+                        f"La Resolución TRASU fue notificada el {notification}",text,count=1,flags=re.I)
+        text=re.sub(r"^La\s+Resoluci[oó]n(?:\s+TRASU)?\s+N(?:ro\.?|[.°º])?\s*[0-9][A-Z0-9./-]*",
+                    "La Resolución TRASU",text,count=1,flags=re.I)
+    return text
+
 def ai_evaluate(payload: dict[str,Any]) -> dict[str,Any]:
     if payload.get("tipo_acto")=="Resolución TRASU":
         verified_date=str(payload.get("fecha_verificada") or "").strip()
@@ -603,13 +623,14 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
     half=len(paragraph)//2
     if len(paragraph)%2==0 and paragraph[:half]==paragraph[half:]:
         paragraph=paragraph[:half].strip()
-    result["parrafo_final"]=paragraph
+    result["parrafo_final"]=normalize_legal_paragraph(paragraph,result.get("ficha",{}))
     return result
 
 def regenerate_paragraph(result: dict[str,Any]) -> str:
     context={"ficha":result.get("ficha",{}),"evaluacion_juridica":result.get("evaluacion_juridica",{}),"resultado":result.get("resultado"),"subsanacion_voluntaria":result.get("subsanacion_voluntaria"),"clasificacion":result.get("clasificacion"),"datos_pendientes":result.get("datos_pendientes",[]),"instrucciones":INSTRUCCIONES.read_text("utf-8",errors="ignore")[:40000]}
-    response=gemini_text("Regenera únicamente el párrafo jurídico final con los datos aportados. No inventes ni completes faltantes. Devuelve JSON {parrafo_final:string}.",json.dumps(context,ensure_ascii=False),json_mode=True)
-    return parse_json_response(response)["parrafo_final"]
+    response=gemini_text("Regenera únicamente el párrafo jurídico final con los datos aportados. Usa todas las fechas exclusivamente en formato dd/mm/aaaa. Si es TRASU, inicia con 'La Resolución TRASU fue notificada el dd/mm/aaaa' y no incluyas el número de resolución ni sustituyas la notificación por la emisión. No inventes ni completes faltantes. Devuelve JSON {parrafo_final:string}.",json.dumps(context,ensure_ascii=False),json_mode=True)
+    paragraph=parse_json_response(response)["parrafo_final"]
+    return normalize_legal_paragraph(paragraph,result.get("ficha",{}))
 
 def to_row(result: dict, documents: list[str]) -> dict:
     f=result.get("ficha",{}); e=result.get("evaluacion_juridica",{})
