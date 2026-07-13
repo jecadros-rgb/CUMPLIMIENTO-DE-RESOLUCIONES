@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-18"
+APP_VERSION = "2026.07.13-19"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -739,35 +739,64 @@ def enforce_conditional_reconnection_timeline(result: dict[str,Any], extraction:
         return paragraph
 
     timely_objective_proof=False
+    late_state_dates=[]
     for item in (extraction.get("medios_probatorios") or []):
         if not isinstance(item,dict): continue
         state=_fold_legal_text(item.get("estado"))
         date_text=str(item.get("fecha_ejecucion_acreditada") or "").strip()
         source_text=str(item.get("fuente_fecha_ejecucion") or item.get("cita") or "").strip()
-        if state not in {"ejecutado","condicion_no_configurada"} or not date_text or not source_text:
-            continue
-        event_date=pd.to_datetime(date_text,dayfirst=True,errors="coerce")
-        if pd.isna(event_date): continue
-        event_date=pd.Timestamp(event_date).normalize()
-        if state=="condicion_no_configurada" and event_date==notification:
-            timely_objective_proof=True; break
-        if state=="ejecutado" and notification<=event_date<=due:
-            timely_objective_proof=True; break
+        evidence_text=_fold_legal_text(" ".join(str(item.get(k) or "") for k in
+                                                ("documento","hecho_acreditado","cita","fuente_fecha_ejecucion")))
+        shows_active=("servicio" in evidence_text and any(k in evidence_text for k in ("activo","operativo")))
+        if state in {"ejecutado","condicion_no_configurada"} and date_text and source_text:
+            event_date=pd.to_datetime(date_text,dayfirst=True,errors="coerce")
+            if pd.notna(event_date):
+                event_date=pd.Timestamp(event_date).normalize()
+                if state=="condicion_no_configurada" and event_date==notification:
+                    timely_objective_proof=True; break
+                if state=="ejecutado" and notification<=event_date<=due:
+                    timely_objective_proof=True; break
+        if shows_active:
+            later_text=str(item.get("fecha_ejecucion_acreditada") or item.get("fecha_documento") or "").strip()
+            later_date=pd.to_datetime(later_text,dayfirst=True,errors="coerce")
+            if pd.notna(later_date) and pd.Timestamp(later_date).normalize()>due:
+                late_state_dates.append(pd.Timestamp(later_date).normalize())
     if timely_objective_proof:
         return paragraph
+
+    # If the evidence inventory omitted the document date but the paragraph
+    # identifies a later dated active-state record, preserve it as the first
+    # objectively accredited date instead of treating the execution as absent.
+    folded_paragraph=_fold_legal_text(paragraph)
+    if not late_state_dates and any(k in folded_paragraph for k in ("activo","operativo")):
+        for day,month,year in re.findall(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b",str(paragraph or "")):
+            candidate=pd.to_datetime(f"{day}/{month}/{year}",dayfirst=True,errors="coerce")
+            if pd.notna(candidate) and pd.Timestamp(candidate).normalize()>due:
+                late_state_dates.append(pd.Timestamp(candidate).normalize())
 
     result["resultado"]="Incumplió"
     result["clasificacion"]="PAS"
     result["subsanacion_voluntaria"]="no aplica"
     checklist=result.setdefault("evaluacion_juridica",{}).setdefault("checklist",[])
-    checklist.append(
-        "Validación temporal: no existe prueba objetiva fechada que acredite que la condición no se configuró "
-        "en la fecha de notificación o que la reconexión se ejecutó hasta el vencimiento.")
     respect=re.search(r"\bAl\s+respecto\b.*?\.(?=\s+[A-ZÁÉÍÓÚÑ]|$)",str(paragraph or ""),flags=re.I|re.S)
     allegation=respect.group(0).strip() if respect else (
         "Al respecto, la empresa operadora señaló que el servicio se encontraba activo y operativo.")
     notification_text=notification.strftime("%d/%m/%Y")
     due_text=due.strftime("%d/%m/%Y")
+    if late_state_dates:
+        accredited_date=min(late_state_dates).strftime("%d/%m/%Y")
+        checklist.append(
+            f"Validación temporal: el estado activo se acredita recién el {accredited_date}, después del "
+            f"vencimiento del {due_text}; corresponde ejecución fuera de plazo.")
+        return (f"{allegation} Ahora bien, dicho medio acredita que el servicio se encontraba activo y operativo "
+                f"el {accredited_date}; sin embargo, no contiene un registro histórico con una fecha anterior que "
+                f"demuestre la ejecución hasta el {due_text}. En consecuencia, la empresa operadora acreditó la "
+                "ejecución del mandato fuera del plazo establecido, con lo cual se habría configurado la infracción. "
+                "Asimismo, no resulta aplicable el eximente de subsanación voluntaria, debido a que el mandato materia "
+                "de análisis se encuentra vinculado a una restricción del servicio cuyos efectos no pueden ser revertidos.")
+    checklist.append(
+        "Validación temporal: no existe prueba objetiva fechada que acredite que la condición no se configuró "
+        "en la fecha de notificación o que la reconexión se ejecutó hasta el vencimiento.")
     return (f"{allegation} Ahora bien, dicho medio acredita únicamente el estado del servicio en la fecha de "
             f"su consulta o comunicación, pero no contiene un registro histórico con fecha objetiva que demuestre que "
             f"el servicio ya estaba activo el {notification_text} ni que hubiese sido reconectado hasta el {due_text}. "
