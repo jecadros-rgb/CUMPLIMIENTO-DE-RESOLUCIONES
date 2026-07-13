@@ -247,13 +247,28 @@ Si contiene el titulo HA RESUELTO, SE RESUELVE o la continuacion de sus numerale
             for index in reversed(indices[-12:]):
                 try:
                     source.seek(index)
-                    image=source.convert("RGB"); image.thumbnail((1800,1800))
-                    buf=io.BytesIO(); image.save(buf,format="JPEG",quality=84,optimize=True)
-                    content=[operative_instruction+"\nESQUEMA: "+json.dumps(operative_schema,ensure_ascii=False),
-                             f"Pagina {index+1} de {total}",
-                             types.Part.from_bytes(data=buf.getvalue(),mime_type="image/jpeg")]
-                    raw=gemini_text("Extrae de forma estructurada la parte resolutiva visible; no hagas una transcripcion literal extensa.",content,json_mode=True)
-                    recovered=facts_text(raw)
+                    original=source.convert("RGB")
+                    # First try the page normally. If the provider rejects a full
+                    # legal page as RECITATION, retry only its central body. The
+                    # crop removes logos, signatures and footers while retaining
+                    # the numbered operative provisions and their deadlines.
+                    variants=[("pagina completa",original)]
+                    width,height=original.size
+                    if height>800:
+                        variants.append(("cuerpo central",original.crop((0,int(height*.14),width,int(height*.90)))))
+                    recovered=""
+                    for variant_name,variant in variants:
+                        try:
+                            image=variant.copy(); image.thumbnail((1800,1800))
+                            buf=io.BytesIO(); image.save(buf,format="JPEG",quality=84,optimize=True)
+                            content=[operative_instruction+"\nESQUEMA: "+json.dumps(operative_schema,ensure_ascii=False),
+                                     f"Pagina {index+1} de {total}, {variant_name}",
+                                     types.Part.from_bytes(data=buf.getvalue(),mime_type="image/jpeg")]
+                            raw=gemini_text("Resume en campos JSON las disposiciones numeradas visibles y sus plazos; no reproduzcas literalmente el documento.",content,json_mode=True)
+                            recovered=facts_text(raw)
+                            if "HA RESUELTO" in recovered.upper(): break
+                        except Exception as variant_error:
+                            recovery_errors.append(f"pagina {index+1}, {variant_name}: {variant_error}")
                     if "HA RESUELTO" in recovered.upper():
                         combined_transcription=(combined_transcription+"\n\n"+recovered).strip()
                         break
