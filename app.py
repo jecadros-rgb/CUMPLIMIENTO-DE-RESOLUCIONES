@@ -584,9 +584,9 @@ if analyze:
 
 if st.session_state.analysis_error:
     st.error(st.session_state.analysis_error)
-    if st.session_state.debug_resolutivo:
-        with st.expander("Ver texto de la parte resolutiva detectada (para diagnóstico)"):
-            st.text(st.session_state.debug_resolutivo)
+if st.session_state.debug_resolutivo:
+    with st.expander("Ver texto de la parte resolutiva detectada (para diagnóstico)"):
+        st.text(st.session_state.debug_resolutivo)
 elif st.session_state.analysis_status:
     st.info(st.session_state.analysis_status)
 
