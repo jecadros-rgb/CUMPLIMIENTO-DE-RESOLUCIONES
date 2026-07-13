@@ -332,7 +332,6 @@ def calculate_due(notification: str, context: str) -> tuple[str,str] | None:
 def deterministic_paragraph(result: dict[str,Any], extraction: dict[str,Any]) -> str:
     """Last-resort grounded drafting; never leaves a completed case blank."""
     f=result.get("ficha") if isinstance(result.get("ficha"),dict) else {}
-    numero=f.get("numero_acto") or "no identificado"
     acto=f.get("tipo_acto") or "acto evaluado"
     notif=f.get("fecha_notificacion_emision") or "no identificada"
     plazo=f.get("plazo_cumplimiento") or "no identificado"
@@ -355,7 +354,7 @@ def deterministic_paragraph(result: dict[str,Any], extraction: dict[str,Any]) ->
     resultado=result.get("resultado") or "Pendiente"
     subs=result.get("subsanacion_voluntaria") or "no corresponde"
     clas=result.get("clasificacion") or "Pendiente"
-    return (f"El {acto} N.° {numero} fue notificado el {notif}, con un plazo de {plazo}, que vencía el {vence}. "
+    return (f"El {acto} fue notificado el {notif}, con un plazo de {plazo}, que vencía el {vence}. "
             f"La obligación principal consistía en {obligacion}. Al respecto, la documentación examinada acredita lo siguiente: {contraste}. "
             f"Del contraste individual de las obligaciones se obtiene: {matriz}. En consecuencia, el resultado de la evaluación es {resultado} y la clasificación es {clas}. "
             f"Respecto de la subsanación voluntaria, {subs}, conforme al cese y reversión efectivamente acreditados en el expediente.")
@@ -406,6 +405,7 @@ MÉTODO Y CONTROLES JURÍDICOS OBLIGATORIOS (en este orden):
 12. Antes de redactar, construye el checklist con: mandato; plazo; prueba exigible; prueba existente; periodos acreditados; periodos pendientes; regla aplicada; conclusión. Si existe contradicción, prevalece la evidencia documental y la regla específica.
 13. El párrafo final debe indicar obligatoriamente y de forma expresa: fecha de notificación, número y tipo de días del plazo verificado, y fecha de vencimiento. Copia esos tres datos literalmente de la ficha; está prohibido recalcularlos u omitir el plazo.
 14. Cada conclusión debe derivarse de hechos mencionados inmediatamente antes. No concluyas cumplimiento, incumplimiento, cese, reversión o subsanación si la matriz no identifica la prueba y los periodos que sustentan esa conclusión.
+15. El párrafo final debe seguir literalmente la redacción y estructura de frases de la plantilla aplicable (PLANTILLAS cumplimiento.docx o PLANTILLAS DENUNCIAS ACTUALIZADAS.docx). Está prohibido agregar datos que la plantilla no contempla en esa oración, como el número de la resolución, carta, SARA, SAR, SAP o resolución de primera instancia, salvo que la plantilla lo incluya expresamente en su texto.
 
 Devuelve JSON válido conforme al esquema y un párrafo final completo, cronológico, con obligación, pruebas por periodo, contraste, conclusión y análisis separado de subsanación."""
     user=json.dumps({"esquema":schema,"caso":{k:v for k,v in payload.items() if k!="documentos"},"extraccion_probatoria":extraction,"fuentes":sources},ensure_ascii=False)
