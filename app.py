@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-29"
+APP_VERSION = "2026.07.13-30"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -1189,13 +1189,16 @@ def excel_bytes(row: dict | None=None) -> bytes:
 
 for k,v in {"result":None,"docs":[],"texts":{},"notice":None,"due":None,
             "analysis_error":None,"analysis_status":None,"upload_signature":None,
-            "debug_resolutivo":None}.items():
+            "debug_resolutivo":None,"uploader_version":0}.items():
     st.session_state.setdefault(k,v)
 
 left,center,right=st.columns([1.05,2.25,1.05],gap="large")
 with left:
     st.markdown('<div class="light">Expediente particular</div>',unsafe_allow_html=True)
-    uploads=st.file_uploader("Cargar expediente",accept_multiple_files=True,type=["pdf","docx","xlsx","xls","csv","txt","png","jpg","jpeg","tif","tiff","zip","rar","7z"])
+    uploads=st.file_uploader(
+        "Cargar expediente",accept_multiple_files=True,
+        type=["pdf","docx","xlsx","xls","csv","txt","png","jpg","jpeg","tif","tiff","zip","rar","7z"],
+        key=f"expediente_upload_{st.session_state.uploader_version}")
     if uploads:
         signature="|".join(f"{u.name}:{hashlib.sha256(u.getvalue()).hexdigest()}" for u in uploads)
         if signature!=st.session_state.upload_signature:
@@ -1340,11 +1343,19 @@ with c3:
         except Exception as e: st.error(f"No se pudo regenerar el párrafo: {e}")
 with c4:
     if st.button("Limpiar expediente",use_container_width=True):
-        for k in ["result","docs","texts","notice","due"]: st.session_state[k]=None if k=="result" else ([] if k=="docs" else {})
+        st.session_state.uploader_version+=1
+        st.session_state.result=None
+        st.session_state.docs=[]
+        st.session_state.texts={}
+        st.session_state.notice=None
+        st.session_state.due=None
+        st.session_state.analysis_error=None
+        st.session_state.analysis_status=None
+        st.session_state.upload_signature=None
+        st.session_state.debug_resolutivo=None
         st.rerun()
 
 st.divider(); st.markdown("### Casos evaluados")
 if HISTORIAL.exists(): st.dataframe(pd.read_excel(HISTORIAL,dtype=str).drop(columns=["Usuario o abonado","Servicio"],errors="ignore"),use_container_width=True,hide_index=True)
 else: st.caption("Aún no hay evaluaciones guardadas.")
 st.caption("CumpleTRASU asiste el análisis jurídico; la revisión profesional y la integridad de las fuentes siguen siendo obligatorias.")
-
