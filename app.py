@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.14-34"
+APP_VERSION = "2026.07.14-35"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -1057,7 +1057,16 @@ def enforce_information_delivery_language(result: dict[str,Any], paragraph: str,
     obligation=str(ficha.get("obligacion_principal") or "")
     if not is_information_delivery_obligation(obligation):
         return paragraph
-    raw=_fold_legal_text("\n".join(str(x) for x in (documents or {}).values()))
+    raw=_fold_legal_text("\n".join(f"{name}\n{text}" for name,text in (documents or {}).items()))
+    paragraph_folded=_fold_legal_text(paragraph)
+    email_case="correo" in (raw+" "+paragraph_folded)
+    arrival_confirmed=any(x in raw for x in (
+        "constancia de entrega","correo entregado","mensaje entregado",
+        "entrega exitosa","entregado al destinatario","delivered",
+        "constancia de recepcion","acuse de recibo","recepcion del usuario")) or any(
+        x in paragraph_folded for x in (
+            "la entrega del contrato se realizo","el contrato fue entregado",
+            "el correo fue entregado","se acredito la entrega"))
     checklist=result.setdefault("evaluacion_juridica",{}).setdefault("checklist",[])
     note=("Control de entrega de información: se aplicó exclusivamente la prueba de contenido, envío, "
           "entrega y recepción; se excluyeron reglas de periodos, descuentos, registro y activación.")
@@ -1091,6 +1100,35 @@ def enforce_information_delivery_language(result: dict[str,Any], paragraph: str,
                 "La ausencia de una constancia no permite atribuir al servidor una respuesta que no figura "
                 "literalmente en el expediente; únicamente permite señalar que no obra una confirmación "
                 "documental de entrega y recepción con fecha verificable.")
+            continue
+        improper_additional_receipt=(
+            email_case and
+            any(x in folded for x in (
+                "recepcion efectiva por parte del usuario","confirmacion de lectura",
+                "respuesta del usuario","acuse de recibo",
+                "confirmacion de recepcion")) and
+            any(x in folded for x in ("no existe","no obra","no acredita","sin constancia")) and
+            arrival_confirmed)
+        if improper_additional_receipt:
+            due_dates=_legal_dates_in(ficha.get("fecha_vencimiento"))
+            sentence_dates=_legal_dates_in(sentence)
+            if arrival_confirmed and sentence_dates:
+                execution_date=max(sentence_dates)
+                due_date=due_dates[0] if due_dates else None
+                timing=(
+                    f"; sin embargo, dicha ejecución fue posterior al vencimiento del {due_date.strftime('%d/%m/%Y')}"
+                    if due_date is not None and execution_date>due_date else
+                    (f" y se produjo dentro del plazo que vencía el {due_date.strftime('%d/%m/%Y')}"
+                     if due_date is not None else ""))
+                cleaned.append(
+                    "La constancia de envío, acompañada por la constancia de entrega al destinatario o, "
+                    "alternativamente, por la constancia de recepción del usuario, acredita que el correo "
+                    f"electrónico fue entregado el {execution_date.strftime('%d/%m/%Y')}{timing}.")
+            elif arrival_confirmed:
+                cleaned.append(
+                    "La constancia de envío, acompañada por la constancia de entrega al destinatario o, "
+                    "alternativamente, por la constancia de recepción del usuario, acredita la entrega del correo "
+                    "electrónico; no se exige acumular ambos medios.")
             continue
         cleaned.append(sentence)
     text=" ".join(x for x in cleaned if x).strip()
@@ -1178,7 +1216,7 @@ RECONEXIÓN CONDICIONADA: si el mandato ordena reconectar solamente cuando el se
 
 INVENTARIO DE EVIDENCIA: distingue entre un medio no presentado y un medio presentado cuyo contenido no acredita el hecho o cuya fecha no es verificable. Si un archivo, índice o página identifica expresamente un "Histórico de cortes y reconexiones", "Consulta del estado del servicio" o printer equivalente, regístralo como presentado y está prohibido afirmar que la empresa "no lo remitió". Si sus datos no muestran una fecha útil, indica con precisión que fue presentado pero no permite verificar temporalmente la reconexión.
 
-REGLA OBLIGATORIA PARA ENTREGA DE CONTRATOS O INFORMACIÓN: una carta o correo simple no acredita por sí solo la ejecución. En entrega física exige cargo de notificación al domicilio con fecha y forma de entrega. En correo electrónico verifica conjuntamente: (a) constancia de entrega efectiva al buzón de destino y (b) acuse, confirmación de recepción del usuario o elemento equivalente con fecha. La sola constancia de envío, la ausencia de rebote o el contrato adjunto no sustituyen esas pruebas. Si falta una constancia, describe únicamente cuál no obra; está prohibido afirmar que el servidor rechazó, no envió o no confirmó algo, salvo que el documento lo diga literalmente. En esta materia está prohibido usar razonamientos sobre periodos, meses, descuentos, registro o activación, salvo que esos elementos formen parte real del mandato evaluado.
+REGLA OBLIGATORIA PARA ENTREGA DE CONTRATOS O INFORMACIÓN: una carta o correo simple no acredita por sí solo la ejecución. En entrega física exige cargo de notificación al domicilio con fecha y forma de entrega. En correo electrónico exige: (a) constancia de envío y (b) cualquiera de estos dos medios alternativos: constancia de entrega al destinatario o al buzón de destino, o constancia de recepción del usuario; todos con fecha verificable. No exijas acumular constancia de entrega y constancia de recepción del usuario: cualquiera de ellas, acompañada por la constancia de envío, acredita la entrega. Tampoco exijas confirmación de lectura o respuesta del usuario. El contrato meramente adjunto sin constancia de envío ni alguno de los dos medios alternativos no basta. Si falta una prueba, describe únicamente cuál no obra; está prohibido afirmar que el servidor rechazó, no envió o no confirmó algo, salvo que el documento lo diga literalmente. Toma como fecha de ejecución la fecha acreditada por la constancia de entrega o, en su defecto, por la constancia de recepción del usuario, y compárala con el vencimiento para determinar si fue oportuna o tardía. En esta materia está prohibido usar razonamientos sobre periodos, meses, descuentos, registro o activación, salvo que esos elementos formen parte real del mandato evaluado.
 
 EXCEPCIÓN OBLIGATORIA — AJUSTES, ANULACIONES O DESCUENTOS EN LA FACTURACIÓN: cuando la obligación consiste en ajustar, anular o descontar un importe en la facturación (no en devolver dinero en efectivo), la ejecución se acredita con la captura de pantalla del sistema o el histórico del estado de cuenta que muestre que el ajuste coincide con el importe ordenado por el TRASU, conforme a los criterios de la materia "Facturación y cobro". En estos casos NO se exige acreditar que el usuario recibió una notificación o carta sobre el ajuste; dicha comunicación, si existe, es evidencia adicional pero no condición de cumplimiento. No confundas la obligación de ajustar la facturación con una obligación de informar al usuario.
 
@@ -1219,7 +1257,7 @@ MÉTODO Y CONTROLES JURÍDICOS OBLIGATORIOS (en este orden):
 16. Está prohibido afirmar que una obligación se ejecutó "dentro del plazo" si la extracción probatoria no contiene una fecha_ejecucion_acreditada igual o anterior a la fecha de vencimiento. Distingue fecha de carta, fecha de captura y fecha histórica de ejecución. Para una reconexión condicionada, un estado "activo" consultado después del vencimiento solo acredita el estado en esa fecha posterior; no acredita la inexistencia de suspensión en la fecha de notificación ni una reconexión oportuna, salvo que el propio histórico identifique esas fechas.
 17. CONTROL DE MATERIA: aplica únicamente criterios correspondientes a la obligación principal identificada. Si la obligación es reconectar, reactivar o acreditar operatividad, está prohibido fundamentar el análisis con reglas o expresiones sobre descuentos recurrentes, meses o periodos pendientes, importes, notas de crédito, registro o activación de beneficios, ofertas o promociones. Esas expresiones solo proceden cuando el mandato principal versa realmente sobre esas materias. Antes de redactar, elimina del razonamiento cualquier criterio perteneciente a una materia distinta.
 18. CONTROL DE EXISTENCIA DOCUMENTAL: no confundas ausencia de un documento con insuficiencia de su contenido. Si el expediente o la extracción probatoria identifica que se presentó un histórico, consulta, printer, acta o constancia, menciona que fue presentado. Solo concluye que no acredita el cumplimiento cuando falte en ese medio la fecha, el evento o el dato objetivo exigible. Nunca escribas "no remitió" o "no adjuntó" respecto de un medio que aparece en el inventario documental.
-19. CONTROL DE ENTREGA DE CONTRATOS O INFORMACIÓN: si el mandato consiste en entregar documentos o brindar información, analiza exclusivamente el contenido ordenado, el medio utilizado y la prueba de entrega y recepción. Para entrega física exige cargo de notificación al domicilio con fecha y forma de entrega. Para correo electrónico exige conjuntamente constancia de entrega efectiva al buzón y acuse o confirmación de recepción del usuario con fecha. Si una constancia no obra, escribe "no obra constancia"; no atribuyas al servidor una negativa, rechazo o falta de confirmación que no esté literalmente documentada. Está prohibido trasladar a estos casos frases sobre periodos, meses pendientes, descuentos, registro o activación.
+19. CONTROL DE ENTREGA DE CONTRATOS O INFORMACIÓN: si el mandato consiste en entregar documentos o brindar información, analiza exclusivamente el contenido ordenado, el medio utilizado y la prueba de entrega. Para entrega física exige cargo de notificación al domicilio con fecha y forma de entrega. Para correo electrónico exige constancia de envío y, adicionalmente, uno de estos medios alternativos: constancia de entrega al destinatario o constancia de recepción del usuario, con fecha verificable. No exijas ambos medios alternativos ni confirmación de lectura o respuesta. Si falta la constancia de envío o ambos medios alternativos, escribe exactamente qué no obra; no atribuyas al servidor una negativa, rechazo o falta de confirmación que no esté literalmente documentada. Usa como fecha de ejecución la fecha acreditada por la constancia de entrega o, en su defecto, por la constancia de recepción, y compárala con el vencimiento. Está prohibido trasladar a estos casos frases sobre periodos, meses pendientes, descuentos, registro o activación.
 
 Devuelve JSON válido conforme al esquema y un párrafo final completo, cronológico, con obligación, pruebas por cada componente, contraste, conclusión y análisis separado de subsanación. Solo usa periodos cuando el mandato los contenga."""
     user=json.dumps({"esquema":schema,"caso":{k:v for k,v in payload.items() if k!="documentos"},"extraccion_probatoria":extraction,"fuentes":sources},ensure_ascii=False)
@@ -1285,7 +1323,7 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
             "clasificacion_obligatoria":"PAS","fuentes_aplicables":sources,
             "tipo_obligacion":"entrega_de_informacion" if information_delivery else "otra",
         }
-        rewrite_system="""Redacta un único párrafo jurídico conforme a la plantilla TRASU. Las conclusiones indicadas como obligatorias están bloqueadas y no puedes modificarlas. Debes indicar literalmente la fecha de notificación, el plazo de cumplimiento (número y tipo de días) y la fecha de vencimiento que aparecen en la ficha; no puedes recalcularlos ni omitirlos. No afirmes que una programación, solicitud, carta o gestión en curso acredita ejecución. Si tipo_obligacion=entrega_de_informacion, analiza únicamente el contenido ordenado, el envío, la entrega y la recepción: la notificación física se acredita con cargo al domicilio; el correo electrónico requiere constancia de entrega al buzón y acuse o confirmación de recepción del usuario. Cuando falte una constancia escribe solo que no obra; no inventes respuestas del servidor. En esos casos está prohibido mencionar periodos, meses pendientes, descuentos, registro o activación. Para las demás obligaciones explica de forma neutral qué componente material quedó pendiente, sin importar frases de otra materia. No apliques el eximente por el solo hecho de que no exista restricción del servicio. Devuelve JSON {parrafo_final:string}."""
+        rewrite_system="""Redacta un único párrafo jurídico conforme a la plantilla TRASU. Las conclusiones indicadas como obligatorias están bloqueadas y no puedes modificarlas. Debes indicar literalmente la fecha de notificación, el plazo de cumplimiento (número y tipo de días) y la fecha de vencimiento que aparecen en la ficha; no puedes recalcularlos ni omitirlos. No afirmes que una programación, solicitud, carta o gestión en curso acredita ejecución. Si tipo_obligacion=entrega_de_informacion, analiza únicamente el contenido ordenado y su entrega: la notificación física se acredita con cargo al domicilio; el correo electrónico requiere constancia de envío y, alternativamente, constancia de entrega al destinatario o constancia de recepción del usuario. No exijas acumular ambos medios alternativos ni confirmación de lectura o respuesta. Usa como fecha de ejecución la fecha de entrega o, en su defecto, la fecha de recepción acreditada, y determina si fue oportuna o tardía. Cuando falte una prueba escribe solo cuál no obra; no inventes respuestas del servidor. En esos casos está prohibido mencionar periodos, meses pendientes, descuentos, registro o activación. Para las demás obligaciones explica de forma neutral qué componente material quedó pendiente, sin importar frases de otra materia. No apliques el eximente por el solo hecho de que no exista restricción del servicio. Devuelve JSON {parrafo_final:string}."""
         rewritten=parse_json_response(gemini_text(rewrite_system,json.dumps(locked,ensure_ascii=False),json_mode=True)) or {}
         if not isinstance(rewritten,dict): rewritten={}
         result["parrafo_final"]=rewritten.get("parrafo_final",result.get("parrafo_final",""))
@@ -1335,7 +1373,7 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
 
 def regenerate_paragraph(result: dict[str,Any]) -> str:
     context={"ficha":result.get("ficha",{}),"evaluacion_juridica":result.get("evaluacion_juridica",{}),"resultado":result.get("resultado"),"subsanacion_voluntaria":result.get("subsanacion_voluntaria"),"clasificacion":result.get("clasificacion"),"datos_pendientes":result.get("datos_pendientes",[]),"instrucciones":INSTRUCCIONES.read_text("utf-8",errors="ignore")[:40000]}
-    response=gemini_text("Regenera únicamente el párrafo jurídico final con los datos aportados. Usa todas las fechas exclusivamente en formato dd/mm/aaaa. Si es TRASU, inicia con 'La Resolución TRASU fue notificada el dd/mm/aaaa' y no incluyas el número de resolución ni sustituyas la notificación por la emisión. Respeta el campo evaluacion_juridica.restriccion_servicio: cuando sea 'No', está prohibido afirmar que el mandato restringe el servicio o que sus efectos son irreversibles por ese motivo. Si la obligación es entregar contratos o información, analiza solo el contenido, la entrega y la recepción; no inventes respuestas del servidor ni uses frases sobre periodos, descuentos, registro o activación. No inventes ni completes faltantes. Devuelve JSON {parrafo_final:string}.",json.dumps(context,ensure_ascii=False),json_mode=True)
+    response=gemini_text("Regenera únicamente el párrafo jurídico final con los datos aportados. Usa todas las fechas exclusivamente en formato dd/mm/aaaa. Si es TRASU, inicia con 'La Resolución TRASU fue notificada el dd/mm/aaaa' y no incluyas el número de resolución ni sustituyas la notificación por la emisión. Respeta el campo evaluacion_juridica.restriccion_servicio: cuando sea 'No', está prohibido afirmar que el mandato restringe el servicio o que sus efectos son irreversibles por ese motivo. Si la obligación es entregar contratos o información por correo, exige constancia de envío y, como prueba alternativa de llegada, constancia de entrega al destinatario o constancia de recepción del usuario; no exijas ambas ni confirmación de lectura o respuesta. Usa la fecha acreditada de entrega o recepción para determinar si la ejecución fue oportuna o tardía. No inventes respuestas del servidor ni uses frases sobre periodos, descuentos, registro o activación. No inventes ni completes faltantes. Devuelve JSON {parrafo_final:string}.",json.dumps(context,ensure_ascii=False),json_mode=True)
     paragraph=parse_json_response(response)["parrafo_final"]
     return normalize_legal_paragraph(paragraph,result.get("ficha",{}),result.get("resultado",""))
 
