@@ -509,7 +509,8 @@ def _legal_tokens(value: Any) -> set[str]:
         "empresa","operadora","resolucion","trasu","usuario","cumplimiento"}}
 
 def relevant_excel_rules(name: str, case_context: str, limit: int=28,
-                         service_restriction: bool | None=None) -> str:
+                         service_restriction: bool | None=None,
+                         information_delivery: bool=False) -> str:
     """Retrieve applicable rows instead of truncating a whole legal workbook."""
     book=pd.read_excel(FUENTES/name,sheet_name=None,dtype=str,header=None)
     query=_legal_tokens(case_context)
@@ -545,6 +546,8 @@ def relevant_excel_rules(name: str, case_context: str, limit: int=28,
             discount_rule=any(k in low for k in (
                 "registro y activación de los descuentos","descuento recurrente",
                 "ajuste recurrente","meses pendientes","meses restantes"))
+            if information_delivery and discount_rule:
+                continue
             general=general or (discount_case and discount_rule)
             if general: score+=100
             if score: ranked.append((score,sheet,int(idx)+1,line))
@@ -691,6 +694,7 @@ def classify_service_restriction(obligation: str, matter: str) -> tuple[bool,str
 def legal_sources(case_context: str, template: str, obligation: str) -> dict[str,str]:
     matter,criteria,criteria_ids=select_applicable_criteria(obligation)
     restriction,restriction_reason=classify_service_restriction(obligation,matter)
+    information_delivery=is_information_delivery_obligation(obligation)
     return {
         "instrucciones":INSTRUCCIONES.read_text("utf-8",errors="ignore"),
         "materia_criterios_seleccionada":matter,
@@ -700,7 +704,8 @@ def legal_sources(case_context: str, template: str, obligation: str) -> dict[str
         "sustento_restriccion_servicio":restriction_reason,
         "plantilla_aplicable":source_text(template,80000),
         "pautas_pas_aplicables":relevant_excel_rules(
-            "PAUTAS PAS.xlsx",case_context,26,service_restriction=restriction),
+            "PAUTAS PAS.xlsx",case_context,26,service_restriction=restriction,
+            information_delivery=information_delivery),
     }
 
 def calculate_due(notification: str, context: str) -> tuple[str,str] | None:
@@ -1059,12 +1064,23 @@ def enforce_information_delivery_language(result: dict[str,Any], paragraph: str,
     if note not in checklist:
         checklist.append(note)
     cleaned=[]
+    neutral_added=False
+    obligation_folded=_fold_legal_text(obligation)
+    mandate_has_period=any(x in obligation_folded for x in ("periodo","meses","mensual"))
     for sentence in re.split(r"(?<=[.!?])\s+",str(paragraph or "").strip()):
         folded=_fold_legal_text(sentence)
         cross_matter=(
-            any(x in folded for x in ("periodo","meses pendientes","meses restantes")) and
-            any(x in folded for x in ("registro y activacion","descuento","beneficio","nota de credito")))
+            (any(x in folded for x in ("periodo","meses pendientes","meses restantes")) and
+             (not mandate_has_period or
+              any(x in folded for x in ("registro y activacion","descuento","beneficio","nota de credito")))) or
+            (any(x in folded for x in ("registro y activacion","descuento recurrente","nota de credito")) and
+             not any(x in obligation_folded for x in ("registro","descuento","nota de credito"))))
         if cross_matter:
+            if not neutral_added:
+                cleaned.append(
+                    "Al no haberse acreditado la entrega y recepción de todos los documentos y de toda la "
+                    "información ordenada, no se acreditó la ejecución íntegra del mandato.")
+                neutral_added=True
             continue
         invented_server=(
             "servidor" in folded and
@@ -1184,7 +1200,7 @@ JERARQUÍA DOCUMENTAL OBLIGATORIA:
 
 MÉTODO Y CONTROLES JURÍDICOS OBLIGATORIOS (en este orden):
 0. Determina la materia y cita en el checklist las filas concretas de criterios y pautas usadas. No uses una regla de otra materia.
-1. Evalúa cada componente y cada periodo del mandato. El cumplimiento parcial NO equivale a cumplimiento íntegro.
+1. Evalúa cada componente del mandato y, únicamente cuando el propio mandato tenga periodos, evalúa cada periodo. El cumplimiento parcial NO equivale a cumplimiento íntegro.
 2. Determina la prueba exigible y el resultado únicamente con las filas seleccionadas de la materia aplicable y con los hechos acreditados.
 3. Si el mandato contiene varios componentes, evalúa cada componente sin importar criterios de otra materia.
 4. La subsanación voluntaria exige conjuntamente cese TOTAL de la conducta y reversión INTEGRAL de todos sus efectos antes del procedimiento. Que la materia no restrinja el servicio, por sí solo, jamás basta.
@@ -1196,16 +1212,16 @@ MÉTODO Y CONTROLES JURÍDICOS OBLIGATORIOS (en este orden):
 9. Mantén separadas tres decisiones: (a) cumplimiento material dentro del plazo, (b) razonabilidad para una ejecución tardía y (c) eximente de subsanación voluntaria. No conviertas automáticamente una ejecución tardía en subsanación.
 10. No traslades pruebas, frases ni conclusiones de una materia distinta de la materia seleccionada.
 11. La etiqueta NO PAS de una fila solo procede si todos los hechos descritos en esa fila están acreditados. Si faltan meses, extremos o prueba objetiva, aplica la fila específica de incumplimiento/PAS.
-12. Antes de redactar, construye el checklist con: mandato; plazo; prueba exigible; prueba existente; periodos acreditados; periodos pendientes; regla aplicada; conclusión. Si existe contradicción, prevalece la evidencia documental y la regla específica.
+12. Antes de redactar, construye el checklist con: mandato; plazo; prueba exigible; prueba existente; componentes acreditados; componentes pendientes; regla aplicada; conclusión. Incluye periodos acreditados o pendientes solo cuando el mandato realmente los contenga. Si existe contradicción, prevalece la evidencia documental y la regla específica.
 13. El párrafo final debe indicar obligatoriamente y de forma expresa: fecha de notificación, número y tipo de días del plazo verificado, y fecha de vencimiento. Copia esos tres datos literalmente de la ficha; está prohibido recalcularlos u omitir el plazo.
-14. Cada conclusión debe derivarse de hechos mencionados inmediatamente antes. No concluyas cumplimiento, incumplimiento, cese, reversión o subsanación si la matriz no identifica la prueba y los periodos que sustentan esa conclusión.
+14. Cada conclusión debe derivarse de hechos mencionados inmediatamente antes. No concluyas cumplimiento, incumplimiento, cese, reversión o subsanación si la matriz no identifica la prueba y los componentes que sustentan esa conclusión. Exige periodos solo cuando formen parte de la obligación.
 15. El párrafo final debe seguir literalmente la redacción y estructura de frases de la plantilla aplicable (PLANTILLAS cumplimiento.docx o PLANTILLAS DENUNCIAS ACTUALIZADAS.docx). Está prohibido agregar datos que la plantilla no contempla en esa oración, como el número de la resolución, carta, SARA, SAR, SAP o resolución de primera instancia, salvo que la plantilla lo incluya expresamente en su texto.
 16. Está prohibido afirmar que una obligación se ejecutó "dentro del plazo" si la extracción probatoria no contiene una fecha_ejecucion_acreditada igual o anterior a la fecha de vencimiento. Distingue fecha de carta, fecha de captura y fecha histórica de ejecución. Para una reconexión condicionada, un estado "activo" consultado después del vencimiento solo acredita el estado en esa fecha posterior; no acredita la inexistencia de suspensión en la fecha de notificación ni una reconexión oportuna, salvo que el propio histórico identifique esas fechas.
 17. CONTROL DE MATERIA: aplica únicamente criterios correspondientes a la obligación principal identificada. Si la obligación es reconectar, reactivar o acreditar operatividad, está prohibido fundamentar el análisis con reglas o expresiones sobre descuentos recurrentes, meses o periodos pendientes, importes, notas de crédito, registro o activación de beneficios, ofertas o promociones. Esas expresiones solo proceden cuando el mandato principal versa realmente sobre esas materias. Antes de redactar, elimina del razonamiento cualquier criterio perteneciente a una materia distinta.
 18. CONTROL DE EXISTENCIA DOCUMENTAL: no confundas ausencia de un documento con insuficiencia de su contenido. Si el expediente o la extracción probatoria identifica que se presentó un histórico, consulta, printer, acta o constancia, menciona que fue presentado. Solo concluye que no acredita el cumplimiento cuando falte en ese medio la fecha, el evento o el dato objetivo exigible. Nunca escribas "no remitió" o "no adjuntó" respecto de un medio que aparece en el inventario documental.
 19. CONTROL DE ENTREGA DE CONTRATOS O INFORMACIÓN: si el mandato consiste en entregar documentos o brindar información, analiza exclusivamente el contenido ordenado, el medio utilizado y la prueba de entrega y recepción. Para entrega física exige cargo de notificación al domicilio con fecha y forma de entrega. Para correo electrónico exige conjuntamente constancia de entrega efectiva al buzón y acuse o confirmación de recepción del usuario con fecha. Si una constancia no obra, escribe "no obra constancia"; no atribuyas al servidor una negativa, rechazo o falta de confirmación que no esté literalmente documentada. Está prohibido trasladar a estos casos frases sobre periodos, meses pendientes, descuentos, registro o activación.
 
-Devuelve JSON válido conforme al esquema y un párrafo final completo, cronológico, con obligación, pruebas por periodo, contraste, conclusión y análisis separado de subsanación."""
+Devuelve JSON válido conforme al esquema y un párrafo final completo, cronológico, con obligación, pruebas por cada componente, contraste, conclusión y análisis separado de subsanación. Solo usa periodos cuando el mandato los contenga."""
     user=json.dumps({"esquema":schema,"caso":{k:v for k,v in payload.items() if k!="documentos"},"extraccion_probatoria":extraction,"fuentes":sources},ensure_ascii=False)
     result_raw=parse_json_response(gemini_text(system,user,json_mode=True))
     result=json_object(result_raw,("evaluacion","evaluation","resultado"))
