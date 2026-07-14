@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-30"
+APP_VERSION = "2026.07.14-31"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -32,7 +32,7 @@ HISTORIAL = SALIDAS / "evaluaciones.xlsx"
 FUENTES_REQUERIDAS = [
     "PLANTILLAS cumplimiento.docx",
     "PLANTILLAS DENUNCIAS ACTUALIZADAS.docx",
-    "notificaciones mayo.xlsx",
+    "notificaciones 2026.csv",
     "CONTADOR DE PLAZOS - TRASU 2026.xlsx",
     "PAUTAS PAS.xlsx",
 ]
@@ -443,8 +443,8 @@ Devuelve JSON válido conforme al esquema."""
 
 def exact_case_record(expediente: str) -> dict[str,str] | None:
     """Return institutional data from the exact notification row, never from a fuzzy match."""
-    path=FUENTES/"notificaciones mayo.xlsx"
-    for _,df in pd.read_excel(path,sheet_name=None,dtype=str).items():
+    path=FUENTES/"notificaciones 2026.csv"
+    for _,df in {"Notificaciones 2026":pd.read_csv(path,dtype=str,encoding="utf-8-sig")}.items():
         cols={str(c).strip().upper():c for c in df.columns}
         date_key="FEC_NOT_EMP_ELE_TEXTO" if "FEC_NOT_EMP_ELE_TEXTO" in cols else ("FEC_NOT_EMP_ELE" if "FEC_NOT_EMP_ELE" in cols else None)
         if "NRO_EXPEDIENTE" in cols and date_key:
@@ -469,8 +469,8 @@ def identify_exact_expediente(context: str) -> str | None:
     """Resolve filename-safe variants to one exact value stored in NRO_EXPEDIENTE."""
     normalized_context=re.sub(r"[^A-Z0-9]","",context.upper())
     candidates=[]
-    path=FUENTES/"notificaciones mayo.xlsx"
-    for _,df in pd.read_excel(path,sheet_name=None,dtype=str).items():
+    path=FUENTES/"notificaciones 2026.csv"
+    for _,df in {"Notificaciones 2026":pd.read_csv(path,dtype=str,encoding="utf-8-sig")}.items():
         cols={str(c).strip().upper():c for c in df.columns}
         if "NRO_EXPEDIENTE" not in cols: continue
         for value in df[cols["NRO_EXPEDIENTE"]].dropna().astype(str).str.strip().unique():
@@ -1265,7 +1265,7 @@ if analyze:
                     notice=(case_record or {}).get("fecha_notificacion")
                     operator=(case_record or {}).get("empresa_operadora")
                     if not notice:
-                        st.session_state.analysis_error="No se encontró coincidencia exacta del expediente en notificaciones mayo.xlsx. Expediente detectado: "+expediente
+                        st.session_state.analysis_error="No se encontró coincidencia exacta del expediente en notificaciones 2026. Expediente detectado: "+expediente
                     else:
                         deadline=calculate_due(notice,str(principal_data.get("plazo_principal_textual") or ""))
                         if deadline: due,term=deadline
