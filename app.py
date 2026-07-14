@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-26"
+APP_VERSION = "2026.07.13-27"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -48,18 +48,30 @@ TEMP.mkdir(exist_ok=True); SALIDAS.mkdir(exist_ok=True)
 
 st.set_page_config(page_title="CumpleTRASU", page_icon="⚖️", layout="wide")
 st.markdown("""<style>
-:root{--navy:#07111f;--card:#101d2d;--cyan:#2dd4bf;--muted:#91a4bb}
-.stApp{background:radial-gradient(circle at 50% -20%,#17304b 0,#07111f 45%);color:#e8f0f7}
-[data-testid="stHeader"]{background:transparent}.block-container{padding-top:1.25rem;max-width:1600px}
-.hero{border:1px solid #24435d;border-radius:16px;padding:18px 24px;background:rgba(12,28,45,.85);margin-bottom:18px}
-.brand{font-size:2rem;font-weight:800;color:#fff}.brand b{color:var(--cyan)}.sub{color:#a7bacd}
-.tag{float:right;border:1px solid #2d526c;border-radius:999px;padding:7px 12px;color:#9edbd4}
-.panel{background:rgba(13,29,46,.9);border:1px solid #203c54;border-radius:14px;padding:14px;margin-bottom:12px}
-.light{color:#91a4bb;font-size:.82rem;text-transform:uppercase;letter-spacing:.08em}
+:root{--blue:#005f9e;--blue-dark:#08466f;--cyan:#15b8d4;--sky:#eaf8fc;--orange:#f58220;--ink:#173b57;--muted:#5f7f94;--border:#bfdce8}
+.stApp{background:linear-gradient(180deg,#eaf8fc 0,#ffffff 30%,#f5fbfd 100%);color:var(--ink)}
+[data-testid="stHeader"]{background:rgba(255,255,255,.94);border-bottom:1px solid #d8ebf2}.block-container{padding-top:1.25rem;max-width:1600px}
+.hero{border:0;border-radius:18px;padding:20px 26px;background:linear-gradient(115deg,#005f9e 0%,#0786b9 58%,#15b8d4 100%);box-shadow:0 10px 28px rgba(0,95,158,.18);margin-bottom:18px}
+.brand{font-size:2rem;font-weight:800;color:#fff}.brand b{color:#ffb15d}.sub{color:#e8f8fc}
+.tag{float:right;border:1px solid rgba(255,255,255,.65);background:rgba(255,255,255,.13);border-radius:999px;padding:7px 12px;color:#fff}
+.panel{background:#fff;border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:12px;box-shadow:0 5px 16px rgba(0,95,158,.06)}
+.light{color:var(--blue);font-size:.82rem;font-weight:750;text-transform:uppercase;letter-spacing:.08em}
 .traffic{font-size:1.25rem;font-weight:750;padding:12px;border-radius:10px;text-align:center}
-.ok{background:#0b4b3e;color:#9ff6dc}.bad{background:#571e2a;color:#ffc0c7}.wait{background:#574617;color:#ffe49a}
-div[data-testid="stFileUploader"]{border:1px dashed #2e6078;border-radius:12px;padding:6px}
-.stButton>button{border-radius:9px}.stDownloadButton>button{width:100%;border-radius:9px}
+.ok{background:#d9f7fb;color:#006b7b;border:1px solid #8bdce8}.bad{background:#fff0e3;color:#b55300;border:1px solid #ffc285}.wait{background:#e7f2fb;color:#075f96;border:1px solid #a9d3ee}
+[data-testid="stWidgetLabel"] p,[data-testid="stMarkdownContainer"] p,[data-testid="stCaptionContainer"],h1,h2,h3{color:var(--ink)}
+[data-testid="stCaptionContainer"]{color:var(--muted)!important}
+[data-testid="stTextInput"] input,[data-testid="stTextArea"] textarea{background:#fff!important;color:var(--ink)!important;border:1px solid var(--border)!important;border-radius:10px!important;box-shadow:0 2px 8px rgba(0,95,158,.05)}
+[data-testid="stSelectbox"] div[data-baseweb="select"]>div{background:#fff!important;color:var(--ink)!important;border-color:var(--border)!important;border-radius:10px!important}
+[data-testid="stSelectbox"] svg{fill:var(--blue)!important}
+div[data-testid="stFileUploader"]{background:#fff;border:1px dashed var(--cyan);border-radius:14px;padding:8px;box-shadow:0 4px 14px rgba(0,95,158,.06)}
+[data-testid="stFileUploaderDropzone"]{background:#f4fbfe!important}
+[data-testid="stExpander"]{background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:0 3px 12px rgba(0,95,158,.05)}
+[data-testid="stMetric"]{background:#fff;border:1px solid var(--border);border-radius:12px;padding:10px}
+hr{border-color:#d6eaf2!important}
+.stButton>button,.stDownloadButton>button{border-radius:10px;border:1px solid var(--blue);background:#fff;color:var(--blue);font-weight:700}.stDownloadButton>button{width:100%}
+.stButton>button:hover,.stDownloadButton>button:hover{border-color:var(--cyan);color:var(--blue-dark);background:#effaff}
+.stButton>button[kind="primary"]{background:linear-gradient(135deg,var(--orange),#ff9f43);color:#fff;border:0;box-shadow:0 6px 15px rgba(245,130,32,.25)}
+.stButton>button[kind="primary"]:hover{background:linear-gradient(135deg,#e66f0e,var(--orange));color:#fff}
 /* La ayuda interna de objetos (DeltaGenerator) no forma parte de CumpleTRASU. */
 [data-testid="stHelp"]{display:none!important}
 </style>""", unsafe_allow_html=True)
@@ -1257,7 +1269,7 @@ with right:
 
 st.divider(); st.markdown('<div class="light">Párrafo final</div>',unsafe_allow_html=True)
 paragraph=st.text_area("Resultado listo para copiar",(r or {}).get("parrafo_final","La evaluación aparecerá aquí cuando se complete el análisis."),height=150,label_visibility="collapsed")
-components.html(f"""<button onclick='navigator.clipboard.writeText(document.getElementById("p").textContent)' style='background:#15324a;color:#e8f0f7;border:1px solid #2d526c;border-radius:8px;padding:8px 15px;cursor:pointer'>Copiar párrafo</button><span id='p' style='display:none'>{paragraph.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')}</span>""",height=45)
+components.html(f"""<button onclick='navigator.clipboard.writeText(document.getElementById("p").textContent)' style='background:#005f9e;color:#fff;border:1px solid #15b8d4;border-radius:9px;padding:8px 15px;font-weight:700;cursor:pointer'>Copiar párrafo</button><span id='p' style='display:none'>{paragraph.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')}</span>""",height=45)
 c1,c2,c3,c4=st.columns(4)
 with c1:
     if st.button("Guardar evaluación",use_container_width=True,disabled=not bool(r)):
