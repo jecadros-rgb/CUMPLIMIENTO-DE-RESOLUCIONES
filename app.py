@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-25"
+APP_VERSION = "2026.07.13-26"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -38,7 +38,8 @@ FUENTES_REQUERIDAS = [
 ]
 COLUMNAS = ["Expediente", "Empresa operadora", "Tipo de acto",
     "Número de resolución o carta", "Fecha de notificación o emisión",
-    "Fecha máxima de vencimiento", "Obligación principal", "Resultado",
+    "Fecha máxima de vencimiento", "Obligación principal", "Estado de ejecución",
+    "Fecha de ejecución acreditada", "Resultado",
     "Tipo de incumplimiento", "Subsanación voluntaria", "PAS / NO PAS", "Sustento breve",
     "Párrafo final", "Datos pendientes", "Documentos usados", "Fecha de evaluación"]
 
@@ -777,6 +778,8 @@ def enforce_conditional_reconnection_timeline(result: dict[str,Any], extraction:
         return paragraph
 
     timely_objective_proof=False
+    timely_proof_state=""
+    timely_proof_date=None
     late_state_dates=[]
     has_system_printer=False
     for item in (extraction.get("medios_probatorios") or []):
@@ -795,9 +798,9 @@ def enforce_conditional_reconnection_timeline(result: dict[str,Any], extraction:
             if pd.notna(event_date):
                 event_date=pd.Timestamp(event_date).normalize()
                 if state=="condicion_no_configurada" and event_date==notification:
-                    timely_objective_proof=True; break
+                    timely_objective_proof=True; timely_proof_state=state; timely_proof_date=event_date; break
                 if state=="ejecutado" and notification<=event_date<=due:
-                    timely_objective_proof=True; break
+                    timely_objective_proof=True; timely_proof_state=state; timely_proof_date=event_date; break
         if shows_active:
             # A system printer without its own visible date is not dated with
             # the enclosing letter's date. The letter date is handled below as
@@ -807,6 +810,12 @@ def enforce_conditional_reconnection_timeline(result: dict[str,Any], extraction:
             if source_text and pd.notna(later_date) and pd.Timestamp(later_date).normalize()>due:
                 late_state_dates.append(pd.Timestamp(later_date).normalize())
     if timely_objective_proof:
+        if timely_proof_state=="condicion_no_configurada":
+            ficha["estado_ejecucion"]="No aplica"
+            ficha["fecha_ejecucion"]="No aplica"
+        else:
+            ficha["estado_ejecucion"]="Ejecutó"
+            ficha["fecha_ejecucion"]=timely_proof_date.strftime("%d/%m/%Y") if timely_proof_date is not None else "No identificada"
         return paragraph
 
     result["resultado"]="Incumplió"
@@ -839,6 +848,8 @@ def enforce_conditional_reconnection_timeline(result: dict[str,Any], extraction:
     if late_state_dates or undated_printer_with_letter:
         accredited_timestamp=min(late_state_dates) if late_state_dates else letter_date
         accredited_date=accredited_timestamp.strftime("%d/%m/%Y")
+        ficha["estado_ejecucion"]="Ejecutó"
+        ficha["fecha_ejecucion"]=accredited_date
         proof_subject=("los printers de los sistemas de la empresa operadora adjuntos a la carta"
                        if has_system_printer else "los medios probatorios objetivos adjuntos a la carta")
         checklist.append(
@@ -860,6 +871,8 @@ def enforce_conditional_reconnection_timeline(result: dict[str,Any], extraction:
                 "mandato fuera del plazo establecido, con lo cual se habría configurado la infracción. Asimismo, no "
                 "resulta aplicable el eximente de subsanación voluntaria, debido a que el mandato materia de análisis "
                 "se encuentra vinculado a una restricción del servicio cuyos efectos no pueden ser revertidos.")
+    ficha["estado_ejecucion"]="No ejecutó"
+    ficha["fecha_ejecucion"]="No aplica"
     checklist.append(
         "Validación temporal: no existe prueba objetiva fechada que acredite que la condición no se configuró "
         "en la fecha de notificación o que la reconexión se ejecutó hasta el vencimiento.")
@@ -871,6 +884,45 @@ def enforce_conditional_reconnection_timeline(result: dict[str,Any], extraction:
             "de la notificación. En consecuencia, al no haberse acreditado la ejecución oportuna del mandato, se habría "
             "configurado la infracción. Asimismo, no resulta aplicable el eximente de subsanación voluntaria, debido a "
             "que no se acreditó el cese total de la conducta ni la reversión integral de sus efectos.")
+
+def derive_execution_fields(result: dict[str,Any], extraction: dict[str,Any]) -> None:
+    """Summarize proven execution without changing the legal result or timeliness analysis."""
+    ficha=result.setdefault("ficha",{})
+    if str(ficha.get("estado_ejecucion") or "").strip():
+        return
+    evidence=[x for x in (extraction.get("medios_probatorios") or []) if isinstance(x,dict)]
+    matrix=[x for x in (extraction.get("matriz_cumplimiento") or []) if isinstance(x,dict)]
+    evidence_states={_fold_legal_text(x.get("estado")) for x in evidence}
+    matrix_states={_fold_legal_text(x.get("estado")) for x in matrix}
+    dates=[]
+    for item in evidence:
+        raw=str(item.get("fecha_ejecucion_acreditada") or "").strip()
+        parsed=pd.to_datetime(raw,dayfirst=True,errors="coerce")
+        if raw and pd.notna(parsed):
+            value=pd.Timestamp(parsed).strftime("%d/%m/%Y")
+            if value not in dates: dates.append(value)
+    has_executed=("ejecutado" in evidence_states or "acreditado" in matrix_states)
+    has_pending=bool(evidence_states & {"programado","en_curso","no_acreditado"} or
+                     matrix_states & {"parcial","no_acreditado"})
+    if "condicion_no_configurada" in evidence_states and not has_executed:
+        status="No aplica"
+    # La obligación se informa como un todo: cualquier componente pendiente
+    # significa que la obligación principal no fue ejecutada íntegramente.
+    elif has_pending:
+        status="No ejecutó"
+    elif has_executed:
+        status="Ejecutó"
+    elif str(result.get("resultado") or "").strip()=="Incumplió":
+        status="No ejecutó"
+    else:
+        status="Pendiente de verificación"
+    ficha["estado_ejecucion"]=status
+    if status=="Ejecutó":
+        ficha["fecha_ejecucion"]="; ".join(dates) if dates else "No identificada"
+    elif status in {"No aplica","No ejecutó"}:
+        ficha["fecha_ejecucion"]="No aplica"
+    else:
+        ficha["fecha_ejecucion"]="Pendiente de verificación"
 
 def ai_evaluate(payload: dict[str,Any]) -> dict[str,Any]:
     if payload.get("tipo_acto")=="Resolución TRASU":
@@ -1040,6 +1092,7 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
     if len(paragraph)%2==0 and paragraph[:half]==paragraph[half:]:
         paragraph=paragraph[:half].strip()
     paragraph=enforce_conditional_reconnection_timeline(result,extraction,paragraph,sources)
+    derive_execution_fields(result,extraction)
     result["parrafo_final"]=normalize_legal_paragraph(paragraph,result.get("ficha",{}),result.get("resultado",""))
     # Estos campos personales no son necesarios para la evaluación ni deben
     # conservarse en el estado, historial o exportación de CumpleTRASU.
@@ -1056,7 +1109,7 @@ def regenerate_paragraph(result: dict[str,Any]) -> str:
 
 def to_row(result: dict, documents: list[str]) -> dict:
     f=result.get("ficha",{}); e=result.get("evaluacion_juridica",{})
-    return dict(zip(COLUMNAS,[f.get("expediente",""),f.get("empresa_operadora",""),f.get("tipo_acto",""),f.get("numero_acto",""),f.get("fecha_notificacion_emision",""),f.get("fecha_vencimiento",""),f.get("obligacion_principal",""),result.get("resultado",""),e.get("tipo_incumplimiento",""),result.get("subsanacion_voluntaria",""),result.get("clasificacion",""),e.get("sustento_breve",""),result.get("parrafo_final",""),"; ".join(map(str,result.get("datos_pendientes",[]))),"; ".join(documents),datetime.now().strftime("%Y-%m-%d %H:%M")]))
+    return dict(zip(COLUMNAS,[f.get("expediente",""),f.get("empresa_operadora",""),f.get("tipo_acto",""),f.get("numero_acto",""),f.get("fecha_notificacion_emision",""),f.get("fecha_vencimiento",""),f.get("obligacion_principal",""),f.get("estado_ejecucion",""),f.get("fecha_ejecucion",""),result.get("resultado",""),e.get("tipo_incumplimiento",""),result.get("subsanacion_voluntaria",""),result.get("clasificacion",""),e.get("sustento_breve",""),result.get("parrafo_final",""),"; ".join(map(str,result.get("datos_pendientes",[]))),"; ".join(documents),datetime.now().strftime("%Y-%m-%d %H:%M")]))
 
 def excel_bytes(row: dict | None=None) -> bytes:
     existing=pd.read_excel(HISTORIAL,dtype=str) if HISTORIAL.exists() else pd.DataFrame(columns=COLUMNAS)
@@ -1173,6 +1226,11 @@ with center:
     tipo=a.text_input("Tipo de acto",f.get("tipo_acto","No identificado")); numero=b.text_input("Número de resolución o carta",f.get("numero_acto","No identificado"))
     notif=a.text_input("Fecha de notificación o emisión",f.get("fecha_notificacion_emision","No identificado")); plazo=b.text_input("Plazo de cumplimiento",f.get("plazo_cumplimiento","Pendiente de verificación"))
     vence=st.text_input("Fecha máxima de vencimiento",f.get("fecha_vencimiento","Pendiente de verificación"))
+    execution_options=["Ejecutó","No ejecutó","No aplica","Pendiente de verificación"]
+    current_execution=f.get("estado_ejecucion","Pendiente de verificación")
+    if current_execution not in execution_options: current_execution="Pendiente de verificación"
+    estado_ejecucion=a.selectbox("Estado de ejecución",execution_options,index=execution_options.index(current_execution))
+    fecha_ejecucion=b.text_input("Fecha de ejecución acreditada",f.get("fecha_ejecucion","Pendiente de verificación"))
     obligacion=st.text_area("Obligación principal",f.get("obligacion_principal","No identificado"),height=90)
     st.markdown("**Medios probatorios**")
     medios=f.get("medios_probatorios",[]) if r else []
@@ -1203,12 +1261,12 @@ components.html(f"""<button onclick='navigator.clipboard.writeText(document.getE
 c1,c2,c3,c4=st.columns(4)
 with c1:
     if st.button("Guardar evaluación",use_container_width=True,disabled=not bool(r)):
-        f.update({"expediente":expediente,"empresa_operadora":empresa,"tipo_acto":tipo,"numero_acto":numero,"fecha_notificacion_emision":notif,"fecha_vencimiento":vence,"obligacion_principal":obligacion}); r["parrafo_final"]=paragraph
+        f.update({"expediente":expediente,"empresa_operadora":empresa,"tipo_acto":tipo,"numero_acto":numero,"fecha_notificacion_emision":notif,"fecha_vencimiento":vence,"estado_ejecucion":estado_ejecucion,"fecha_ejecucion":fecha_ejecucion,"obligacion_principal":obligacion}); r["parrafo_final"]=paragraph
         row=to_row(r,st.session_state.docs); data=excel_bytes(row); HISTORIAL.write_bytes(data); st.success("Evaluación guardada")
 with c2: st.download_button("Exportar a Excel",excel_bytes(to_row(r,st.session_state.docs)) if r else excel_bytes(),"CumpleTRASU_evaluacion.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",use_container_width=True)
 with c3:
     if st.button("Regenerar párrafo",use_container_width=True,disabled=not bool(r)):
-        f.update({"expediente":expediente,"empresa_operadora":empresa,"tipo_acto":tipo,"numero_acto":numero,"fecha_notificacion_emision":notif,"fecha_vencimiento":vence,"obligacion_principal":obligacion,"medios_probatorios":medios})
+        f.update({"expediente":expediente,"empresa_operadora":empresa,"tipo_acto":tipo,"numero_acto":numero,"fecha_notificacion_emision":notif,"fecha_vencimiento":vence,"estado_ejecucion":estado_ejecucion,"fecha_ejecucion":fecha_ejecucion,"obligacion_principal":obligacion,"medios_probatorios":medios})
         try:
             r["parrafo_final"]=regenerate_paragraph(r); st.session_state.result=r; st.rerun()
         except Exception as e: st.error(f"No se pudo regenerar el párrafo: {e}")
