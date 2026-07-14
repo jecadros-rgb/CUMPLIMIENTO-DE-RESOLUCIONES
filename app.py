@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.14-32"
+APP_VERSION = "2026.07.14-33"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -508,7 +508,8 @@ def _legal_tokens(value: Any) -> set[str]:
         "para","como","esta","este","desde","hasta","sobre","entre","donde",
         "empresa","operadora","resolucion","trasu","usuario","cumplimiento"}}
 
-def relevant_excel_rules(name: str, case_context: str, limit: int=28) -> str:
+def relevant_excel_rules(name: str, case_context: str, limit: int=28,
+                         service_restriction: bool | None=None) -> str:
     """Retrieve applicable rows instead of truncating a whole legal workbook."""
     book=pd.read_excel(FUENTES/name,sheet_name=None,dtype=str,header=None)
     query=_legal_tokens(case_context)
@@ -526,6 +527,14 @@ def relevant_excel_rules(name: str, case_context: str, limit: int=28) -> str:
             tokens=_legal_tokens(line)
             score=len(query & tokens)
             low=line.lower()
+            restriction_rule=("restricción del servicio" in low or
+                              "restriccion del servicio" in low or
+                              "materia de falta de servicio" in low)
+            # La pauta que declara irreversibles los efectos de una falta de
+            # servicio no es transversal. Excluirla impide aplicarla a una
+            # obligación meramente informativa, contractual o económica.
+            if service_restriction is False and restriction_rule:
+                continue
             # Only truly transversal rules are boosted for every matter.
             # Discount/programming rules are boosted exclusively when the case
             # itself concerns billing, adjustments, offers or promotions.
@@ -640,15 +649,51 @@ def select_applicable_criteria(obligation: str) -> tuple[str,str,list[int]]:
     text=header+"\n"+"\n".join(f"[FILA {r['fila']} / {r['materia']}] {r['texto']}" for r in selected)
     return primary,text,ids
 
+def classify_service_restriction(obligation: str, matter: str) -> tuple[bool,str]:
+    """Classify only mandates that directly restore or enable use of the service."""
+    text=_fold_legal_text(obligation)
+    information_terms=(
+        "entregar el contrato","remitir el contrato","informar al reclamante",
+        "informar al usuario","terminos y condiciones","montos acordados",
+        "tarifas aplicadas","brindar informacion","entregar informacion",
+        "remitir informacion","trasladar informacion")
+    restoration_terms=(
+        "reconect","reactiv","restablec","instalar el servicio",
+        "instalacion del servicio","trasladar el servicio",
+        "traslado del servicio","retornar el numero","devolver el numero",
+        "portabilidad no autorizada","suspension injustificada",
+        "baja injustificada")
+    if any(term in text for term in information_terms) and not any(term in text for term in restoration_terms):
+        return False, ("La obligación consiste en entregar o comunicar información contractual; "
+                       "no restablece ni habilita materialmente el acceso al servicio.")
+
+    restricted=any(term in text for term in restoration_terms)
+    restricted=restricted or (
+        any(term in text for term in ("averia","interrupcion","falta de servicio","operatividad")) and
+        any(term in text for term in ("prueba","verificar","reparar","operativ","restablec")))
+    restricted=restricted or (
+        "cambio de titularidad" in text and
+        any(term in text for term in ("falta de servicio","reactiv","restablec","activar el servicio")))
+    if restricted:
+        return True, ("La obligación principal restablece o habilita el uso material del servicio "
+                      "en una de las materias institucionalmente calificadas como restrictivas.")
+    return False, ("La obligación no corresponde a calidad o falta de servicio por avería, retorno "
+                   "por portabilidad no autorizada, reactivación por suspensión o baja injustificada, "
+                   "instalación, traslado ni falta de servicio por cambio de titularidad.")
+
 def legal_sources(case_context: str, template: str, obligation: str) -> dict[str,str]:
     matter,criteria,criteria_ids=select_applicable_criteria(obligation)
+    restriction,restriction_reason=classify_service_restriction(obligation,matter)
     return {
         "instrucciones":INSTRUCCIONES.read_text("utf-8",errors="ignore"),
         "materia_criterios_seleccionada":matter,
         "filas_criterios_seleccionadas":", ".join(map(str,criteria_ids)),
         "criterios_evaluacion_aplicables":criteria,
+        "restriccion_servicio":"SI" if restriction else "NO",
+        "sustento_restriccion_servicio":restriction_reason,
         "plantilla_aplicable":source_text(template,80000),
-        "pautas_pas_aplicables":relevant_excel_rules("PAUTAS PAS.xlsx",case_context,26),
+        "pautas_pas_aplicables":relevant_excel_rules(
+            "PAUTAS PAS.xlsx",case_context,26,service_restriction=restriction),
     }
 
 def calculate_due(notification: str, context: str) -> tuple[str,str] | None:
@@ -952,6 +997,47 @@ def enforce_conditional_reconnection_timeline(result: dict[str,Any], extraction:
             "configurado la infracción. Asimismo, no resulta aplicable el eximente de subsanación voluntaria, debido a "
             "que no se acreditó el cese total de la conducta ni la reversión integral de sus efectos.")
 
+def enforce_service_restriction_rule(result: dict[str,Any], paragraph: str,
+                                     sources: dict[str,str]) -> str:
+    """Prevent a lack-of-service PAS rule from contaminating other matters."""
+    restricted=str(sources.get("restriccion_servicio") or "NO").upper()=="SI"
+    reason=str(sources.get("sustento_restriccion_servicio") or "").strip()
+    evaluation=result.setdefault("evaluacion_juridica",{})
+    evaluation["restriccion_servicio"]="Sí" if restricted else "No"
+    checklist=evaluation.setdefault("checklist",[])
+    note=(f"Clasificación de restricción del servicio: {'Sí' if restricted else 'No'}. {reason}").strip()
+    if note not in checklist:
+        checklist.append(note)
+    if restricted:
+        return paragraph
+
+    subs=_fold_legal_text(result.get("subsanacion_voluntaria"))
+    if subs=="aplica":
+        replacement=("Asimismo, resulta aplicable el eximente de subsanación voluntaria, conforme al cese total, "
+                     "la reversión integral y la oportunidad anterior al inicio del PAS acreditados en la evaluación.")
+    elif subs=="no corresponde":
+        replacement="Asimismo, no corresponde evaluar subsanación voluntaria en este supuesto."
+    else:
+        replacement=("Asimismo, no resulta aplicable el eximente de subsanación voluntaria, debido a que no se "
+                     "acreditaron conjuntamente el cese total, la reversión integral y su oportunidad anterior al "
+                     "inicio del PAS.")
+    sentences=re.split(r"(?<=[.!?])\s+",str(paragraph or "").strip())
+    cleaned=[]
+    replaced=False
+    for sentence in sentences:
+        folded=_fold_legal_text(sentence)
+        false_restriction=("restriccion del servicio" in folded and
+                           any(term in folded for term in ("no pueden ser revertidos","no puede ser revertido",
+                                                           "efectos no pueden","no resulta aplicable")))
+        if false_restriction:
+            if not replaced:
+                cleaned.append(replacement); replaced=True
+            continue
+        cleaned.append(sentence)
+    if not replaced and "incumpl" in _fold_legal_text(result.get("resultado")):
+        cleaned.append(replacement)
+    return " ".join(x for x in cleaned if x).strip()
+
 def derive_execution_fields(result: dict[str,Any], extraction: dict[str,Any]) -> None:
     """Summarize proven execution without changing the legal result or timeliness analysis."""
     ficha=result.setdefault("ficha",{})
@@ -1053,6 +1139,7 @@ MÉTODO Y CONTROLES JURÍDICOS OBLIGATORIOS (en este orden):
 2. Determina la prueba exigible y el resultado únicamente con las filas seleccionadas de la materia aplicable y con los hechos acreditados.
 3. Si el mandato contiene varios componentes, evalúa cada componente sin importar criterios de otra materia.
 4. La subsanación voluntaria exige conjuntamente cese TOTAL de la conducta y reversión INTEGRAL de todos sus efectos antes del procedimiento. Que la materia no restrinja el servicio, por sí solo, jamás basta.
+4-A. Usa obligatoriamente los campos restriccion_servicio y sustento_restriccion_servicio de las fuentes. Si restriccion_servicio=NO, está prohibido afirmar que el mandato está vinculado a una restricción del servicio o descartar el eximente por efectos irreversibles de una restricción. En ese supuesto evalúa separadamente cese total, reversión integral y oportunidad anterior al inicio del PAS. Si restriccion_servicio=SI, explica la concreta afectación al acceso o uso material del servicio.
 5. Si siguen componentes pendientes, explica la ausencia de cese total o reversión integral según las pautas seleccionadas.
 6. Usa exclusivamente la fecha de vencimiento calculada y no la recalcules.
 7. Aplica las instrucciones, criterios y pautas PAS entregados, incluso si contradicen una inferencia general del modelo. La plantilla determina la estructura de redacción.
@@ -1160,6 +1247,7 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
         paragraph=paragraph[:half].strip()
     paragraph=enforce_conditional_reconnection_timeline(
         result,extraction,paragraph,sources,payload.get("documentos") if isinstance(payload.get("documentos"),dict) else {})
+    paragraph=enforce_service_restriction_rule(result,paragraph,sources)
     derive_execution_fields(result,extraction)
     result["parrafo_final"]=normalize_legal_paragraph(paragraph,result.get("ficha",{}),result.get("resultado",""))
     # Estos campos personales no son necesarios para la evaluación ni deben
@@ -1171,7 +1259,7 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
 
 def regenerate_paragraph(result: dict[str,Any]) -> str:
     context={"ficha":result.get("ficha",{}),"evaluacion_juridica":result.get("evaluacion_juridica",{}),"resultado":result.get("resultado"),"subsanacion_voluntaria":result.get("subsanacion_voluntaria"),"clasificacion":result.get("clasificacion"),"datos_pendientes":result.get("datos_pendientes",[]),"instrucciones":INSTRUCCIONES.read_text("utf-8",errors="ignore")[:40000]}
-    response=gemini_text("Regenera únicamente el párrafo jurídico final con los datos aportados. Usa todas las fechas exclusivamente en formato dd/mm/aaaa. Si es TRASU, inicia con 'La Resolución TRASU fue notificada el dd/mm/aaaa' y no incluyas el número de resolución ni sustituyas la notificación por la emisión. No inventes ni completes faltantes. Devuelve JSON {parrafo_final:string}.",json.dumps(context,ensure_ascii=False),json_mode=True)
+    response=gemini_text("Regenera únicamente el párrafo jurídico final con los datos aportados. Usa todas las fechas exclusivamente en formato dd/mm/aaaa. Si es TRASU, inicia con 'La Resolución TRASU fue notificada el dd/mm/aaaa' y no incluyas el número de resolución ni sustituyas la notificación por la emisión. Respeta el campo evaluacion_juridica.restriccion_servicio: cuando sea 'No', está prohibido afirmar que el mandato restringe el servicio o que sus efectos son irreversibles por ese motivo. No inventes ni completes faltantes. Devuelve JSON {parrafo_final:string}.",json.dumps(context,ensure_ascii=False),json_mode=True)
     paragraph=parse_json_response(response)["parrafo_final"]
     return normalize_legal_paragraph(paragraph,result.get("ficha",{}),result.get("resultado",""))
 
