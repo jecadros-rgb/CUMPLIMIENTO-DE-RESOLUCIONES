@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-22"
+APP_VERSION = "2026.07.13-23"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -59,6 +59,8 @@ st.markdown("""<style>
 .ok{background:#0b4b3e;color:#9ff6dc}.bad{background:#571e2a;color:#ffc0c7}.wait{background:#574617;color:#ffe49a}
 div[data-testid="stFileUploader"]{border:1px dashed #2e6078;border-radius:12px;padding:6px}
 .stButton>button{border-radius:9px}.stDownloadButton>button{width:100%;border-radius:9px}
+/* La ayuda interna de objetos (DeltaGenerator) no forma parte de CumpleTRASU. */
+[data-testid="stHelp"]{display:none!important}
 </style>""", unsafe_allow_html=True)
 st.markdown('<div class="hero"><span class="tag">OSIPTEL / TRASU</span><div class="brand">Cumple<b>TRASU</b></div><div class="sub">Evaluador Automatizado de Cumplimiento de Resoluciones</div></div>', unsafe_allow_html=True)
 st.caption(f"Versión {APP_VERSION}")
@@ -1202,3 +1204,4 @@ st.divider(); st.markdown("### Casos evaluados")
 if HISTORIAL.exists(): st.dataframe(pd.read_excel(HISTORIAL,dtype=str),use_container_width=True,hide_index=True)
 else: st.caption("Aún no hay evaluaciones guardadas.")
 st.caption("CumpleTRASU asiste el análisis jurídico; la revisión profesional y la integridad de las fuentes siguen siendo obligatorias.")
+
