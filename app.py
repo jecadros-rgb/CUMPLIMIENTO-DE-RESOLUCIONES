@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-23"
+APP_VERSION = "2026.07.13-24"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -36,8 +36,8 @@ FUENTES_REQUERIDAS = [
     "CONTADOR DE PLAZOS - TRASU 2026.xlsx",
     "PAUTAS PAS.xlsx",
 ]
-COLUMNAS = ["Expediente", "Empresa operadora", "Usuario o abonado", "Servicio",
-    "Tipo de acto", "Número de resolución o carta", "Fecha de notificación o emisión",
+COLUMNAS = ["Expediente", "Empresa operadora", "Tipo de acto",
+    "Número de resolución o carta", "Fecha de notificación o emisión",
     "Fecha máxima de vencimiento", "Obligación principal", "Resultado",
     "Tipo de incumplimiento", "Subsanación voluntaria", "PAS / NO PAS", "Sustento breve",
     "Párrafo final", "Datos pendientes", "Documentos usados", "Fecha de evaluación"]
@@ -909,7 +909,7 @@ No evalúes todavía PAS ni subsanación. Devuelve JSON conforme al esquema."""
     extraction_raw=parse_json_response(gemini_text(extraction_system,json.dumps({"esquema":extraction_schema,"caso":payload},ensure_ascii=False),json_mode=True))
     extraction=json_object(extraction_raw,("extraccion","extraction","resultado"))
     if not extraction: raise ValueError("Gemini no devolvió una extracción jurídica utilizable")
-    schema={"ficha":{"expediente":"","empresa_operadora":"","usuario_abonado":"","servicio":"","tipo_acto":"","numero_acto":"","fecha_notificacion_emision":"","plazo_cumplimiento":"","fecha_vencimiento":"","obligacion_principal":"","medios_probatorios":[]},"trazabilidad":[],"evaluacion_juridica":{"checklist":[],"sustento_breve":"","tipo_incumplimiento":""},"resultado":"Cumplió|Incumplió|Inejecutable","subsanacion_voluntaria":"aplica|no aplica|no corresponde","clasificacion":"PAS|NO PAS","parrafo_final":"","datos_pendientes":[]}
+    schema={"ficha":{"expediente":"","empresa_operadora":"","tipo_acto":"","numero_acto":"","fecha_notificacion_emision":"","plazo_cumplimiento":"","fecha_vencimiento":"","obligacion_principal":"","medios_probatorios":[]},"trazabilidad":[],"evaluacion_juridica":{"checklist":[],"sustento_breve":"","tipo_incumplimiento":""},"resultado":"Cumplió|Incumplió|Inejecutable","subsanacion_voluntaria":"aplica|no aplica|no corresponde","clasificacion":"PAS|NO PAS","parrafo_final":"","datos_pendientes":[]}
     system="""Eres analista jurídico senior de OSIPTEL. Usa SOLO la evidencia y fuentes entregadas. No inventes fechas, pruebas ni conclusiones. Lo faltante es 'No identificado' o 'Pendiente de verificación'.
 
 JERARQUÍA DOCUMENTAL OBLIGATORIA:
@@ -1031,6 +1031,11 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
         paragraph=paragraph[:half].strip()
     paragraph=enforce_conditional_reconnection_timeline(result,extraction,paragraph,sources)
     result["parrafo_final"]=normalize_legal_paragraph(paragraph,result.get("ficha",{}),result.get("resultado",""))
+    # Estos campos personales no son necesarios para la evaluación ni deben
+    # conservarse en el estado, historial o exportación de CumpleTRASU.
+    if isinstance(result.get("ficha"),dict):
+        result["ficha"].pop("usuario_abonado",None)
+        result["ficha"].pop("servicio",None)
     return result
 
 def regenerate_paragraph(result: dict[str,Any]) -> str:
@@ -1041,10 +1046,11 @@ def regenerate_paragraph(result: dict[str,Any]) -> str:
 
 def to_row(result: dict, documents: list[str]) -> dict:
     f=result.get("ficha",{}); e=result.get("evaluacion_juridica",{})
-    return dict(zip(COLUMNAS,[f.get("expediente",""),f.get("empresa_operadora",""),f.get("usuario_abonado",""),f.get("servicio",""),f.get("tipo_acto",""),f.get("numero_acto",""),f.get("fecha_notificacion_emision",""),f.get("fecha_vencimiento",""),f.get("obligacion_principal",""),result.get("resultado",""),e.get("tipo_incumplimiento",""),result.get("subsanacion_voluntaria",""),result.get("clasificacion",""),e.get("sustento_breve",""),result.get("parrafo_final",""),"; ".join(map(str,result.get("datos_pendientes",[]))),"; ".join(documents),datetime.now().strftime("%Y-%m-%d %H:%M")]))
+    return dict(zip(COLUMNAS,[f.get("expediente",""),f.get("empresa_operadora",""),f.get("tipo_acto",""),f.get("numero_acto",""),f.get("fecha_notificacion_emision",""),f.get("fecha_vencimiento",""),f.get("obligacion_principal",""),result.get("resultado",""),e.get("tipo_incumplimiento",""),result.get("subsanacion_voluntaria",""),result.get("clasificacion",""),e.get("sustento_breve",""),result.get("parrafo_final",""),"; ".join(map(str,result.get("datos_pendientes",[]))),"; ".join(documents),datetime.now().strftime("%Y-%m-%d %H:%M")]))
 
 def excel_bytes(row: dict | None=None) -> bytes:
     existing=pd.read_excel(HISTORIAL,dtype=str) if HISTORIAL.exists() else pd.DataFrame(columns=COLUMNAS)
+    existing=existing.drop(columns=["Usuario o abonado","Servicio"],errors="ignore").reindex(columns=COLUMNAS)
     if row is not None: existing=pd.concat([existing,pd.DataFrame([row])],ignore_index=True)
     b=io.BytesIO()
     with pd.ExcelWriter(b,engine="openpyxl") as w: existing.to_excel(w,index=False,sheet_name="Evaluaciones")
@@ -1152,7 +1158,6 @@ with center:
     f=(r or {}).get("ficha",{})
     a,b=st.columns(2)
     expediente=a.text_input("Expediente",f.get("expediente","No identificado")); empresa=b.text_input("Empresa operadora",f.get("empresa_operadora","No identificado"))
-    usuario=a.text_input("Usuario o abonado",f.get("usuario_abonado","No identificado")); servicio=b.text_input("Servicio",f.get("servicio","No identificado"))
     tipo=a.text_input("Tipo de acto",f.get("tipo_acto","No identificado")); numero=b.text_input("Número de resolución o carta",f.get("numero_acto","No identificado"))
     notif=a.text_input("Fecha de notificación o emisión",f.get("fecha_notificacion_emision","No identificado")); plazo=b.text_input("Plazo de cumplimiento",f.get("plazo_cumplimiento","Pendiente de verificación"))
     vence=st.text_input("Fecha máxima de vencimiento",f.get("fecha_vencimiento","Pendiente de verificación"))
@@ -1186,12 +1191,12 @@ components.html(f"""<button onclick='navigator.clipboard.writeText(document.getE
 c1,c2,c3,c4=st.columns(4)
 with c1:
     if st.button("Guardar evaluación",use_container_width=True,disabled=not bool(r)):
-        f.update({"expediente":expediente,"empresa_operadora":empresa,"usuario_abonado":usuario,"servicio":servicio,"tipo_acto":tipo,"numero_acto":numero,"fecha_notificacion_emision":notif,"fecha_vencimiento":vence,"obligacion_principal":obligacion}); r["parrafo_final"]=paragraph
+        f.update({"expediente":expediente,"empresa_operadora":empresa,"tipo_acto":tipo,"numero_acto":numero,"fecha_notificacion_emision":notif,"fecha_vencimiento":vence,"obligacion_principal":obligacion}); r["parrafo_final"]=paragraph
         row=to_row(r,st.session_state.docs); data=excel_bytes(row); HISTORIAL.write_bytes(data); st.success("Evaluación guardada")
 with c2: st.download_button("Exportar a Excel",excel_bytes(to_row(r,st.session_state.docs)) if r else excel_bytes(),"CumpleTRASU_evaluacion.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",use_container_width=True)
 with c3:
     if st.button("Regenerar párrafo",use_container_width=True,disabled=not bool(r)):
-        f.update({"expediente":expediente,"empresa_operadora":empresa,"usuario_abonado":usuario,"servicio":servicio,"tipo_acto":tipo,"numero_acto":numero,"fecha_notificacion_emision":notif,"fecha_vencimiento":vence,"obligacion_principal":obligacion,"medios_probatorios":medios})
+        f.update({"expediente":expediente,"empresa_operadora":empresa,"tipo_acto":tipo,"numero_acto":numero,"fecha_notificacion_emision":notif,"fecha_vencimiento":vence,"obligacion_principal":obligacion,"medios_probatorios":medios})
         try:
             r["parrafo_final"]=regenerate_paragraph(r); st.session_state.result=r; st.rerun()
         except Exception as e: st.error(f"No se pudo regenerar el párrafo: {e}")
@@ -1201,7 +1206,7 @@ with c4:
         st.rerun()
 
 st.divider(); st.markdown("### Casos evaluados")
-if HISTORIAL.exists(): st.dataframe(pd.read_excel(HISTORIAL,dtype=str),use_container_width=True,hide_index=True)
+if HISTORIAL.exists(): st.dataframe(pd.read_excel(HISTORIAL,dtype=str).drop(columns=["Usuario o abonado","Servicio"],errors="ignore"),use_container_width=True,hide_index=True)
 else: st.caption("Aún no hay evaluaciones guardadas.")
 st.caption("CumpleTRASU asiste el análisis jurídico; la revisión profesional y la integridad de las fuentes siguen siendo obligatorias.")
 
