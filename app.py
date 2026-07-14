@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-27"
+APP_VERSION = "2026.07.13-28"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -547,6 +547,29 @@ def _fold_legal_text(value: Any) -> str:
     text=unicodedata.normalize("NFD",str(value or "").lower())
     return "".join(c for c in text if unicodedata.category(c)!="Mn")
 
+def _legal_dates_in(value: Any) -> list[pd.Timestamp]:
+    """Read dates from extracted evidence without depending on Gemini's prose."""
+    raw=str(value or "").strip()
+    if not raw:
+        return []
+    months={"enero":"01","febrero":"02","marzo":"03","abril":"04","mayo":"05","junio":"06",
+            "julio":"07","agosto":"08","septiembre":"09","setiembre":"09","octubre":"10",
+            "noviembre":"11","diciembre":"12"}
+    normalized=re.sub(
+        r"\b(\d{1,2})\s+de\s+("+"|".join(months)+r")\s+de\s+(\d{4})\b",
+        lambda m:f"{int(m.group(1)):02d}/{months[m.group(2).lower()]}/{m.group(3)}",
+        raw,flags=re.I)
+    candidates=re.findall(r"\b\d{1,2}/\d{1,2}/\d{4}\b|\b\d{4}-\d{1,2}-\d{1,2}\b",normalized)
+    if not candidates:
+        candidates=[normalized]
+    dates=[]
+    for candidate in candidates:
+        parsed=pd.to_datetime(candidate,dayfirst=not re.match(r"^\d{4}-",candidate),errors="coerce")
+        if pd.notna(parsed):
+            stamp=pd.Timestamp(parsed).normalize()
+            if stamp not in dates: dates.append(stamp)
+    return dates
+
 def _criteria_rows() -> list[dict[str,Any]]:
     """Parse the institutional instruction while preserving each row's matter."""
     raw=CRITERIOS_INSTRUCCION.read_text("utf-8",errors="ignore")
@@ -794,6 +817,7 @@ def enforce_conditional_reconnection_timeline(result: dict[str,Any], extraction:
     timely_proof_date=None
     late_state_dates=[]
     has_system_printer=False
+    letter_dates=[]
     for item in (extraction.get("medios_probatorios") or []):
         if not isinstance(item,dict): continue
         state=_fold_legal_text(item.get("estado"))
@@ -801,6 +825,17 @@ def enforce_conditional_reconnection_timeline(result: dict[str,Any], extraction:
         source_text=str(item.get("fuente_fecha_ejecucion") or item.get("cita") or "").strip()
         evidence_text=_fold_legal_text(" ".join(str(item.get(k) or "") for k in
                                                 ("documento","naturaleza","hecho_acreditado","cita","fuente_fecha_ejecucion")))
+        document_text=_fold_legal_text(" ".join(str(item.get(k) or "") for k in
+                                                ("documento","naturaleza","cita")))
+        # The date of the letter that remitted an undated system printer is
+        # evidence metadata. Read it from the extraction, never from the exact
+        # wording Gemini happens to use in the final paragraph.
+        if ("alegacion" in document_text or "carta" in document_text or
+                "rf-t-fc" in document_text or "rf-c-fc" in document_text):
+            for field in ("fecha_documento","cita","documento"):
+                for extracted_date in _legal_dates_in(item.get(field)):
+                    if extracted_date>=notification and extracted_date not in letter_dates:
+                        letter_dates.append(extracted_date)
         if any(k in evidence_text for k in ("printer","captura del sistema","consulta del sistema",
                                              "historico del sistema","estado del servicio")):
             has_system_printer=True
@@ -849,6 +884,11 @@ def enforce_conditional_reconnection_timeline(result: dict[str,Any], extraction:
     if letter_match:
         parsed_letter=pd.to_datetime(letter_match.group(1),dayfirst=True,errors="coerce")
         if pd.notna(parsed_letter): letter_date=pd.Timestamp(parsed_letter).normalize()
+    if letter_date is None and letter_dates:
+        # Use the earliest post-deadline remitting letter as the conservative
+        # reference. If none is late, use the earliest available letter.
+        post_deadline=sorted(d for d in letter_dates if d>due)
+        letter_date=(post_deadline or sorted(letter_dates))[0]
     analysis_start=re.search(r"\bAl\s+respecto\b",str(paragraph or ""),flags=re.I)
     preserved_opening=str(paragraph or "")[:analysis_start.start()].strip() if analysis_start else ""
     def with_preserved_opening(analysis: str) -> str:
