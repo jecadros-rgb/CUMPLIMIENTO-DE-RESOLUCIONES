@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.14-31"
+APP_VERSION = "2026.07.14-32"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -455,8 +455,8 @@ def exact_case_record(expediente: str) -> dict[str,str] | None:
             if not hit.empty and pd.notna(hit.iloc[0][cols[date_key]]):
                 row=hit.iloc[0]
                 raw=str(row[cols[date_key]]).strip()
-                # The source column stores a full timestamp (00:00:00); keep only the date.
-                parsed=pd.to_datetime(raw,errors="coerce")
+                # The protected annual source stores Peruvian dates as dd/mm/yyyy.
+                parsed=pd.to_datetime(raw,dayfirst=True,errors="coerce")
                 notification=parsed.strftime("%d/%m/%Y") if pd.notna(parsed) else raw
                 operator=""
                 if "EMPRESA" in cols and pd.notna(row[cols["EMPRESA"]]):
