@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.14-33"
+APP_VERSION = "2026.07.14-34"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -556,6 +556,13 @@ def _fold_legal_text(value: Any) -> str:
     text=unicodedata.normalize("NFD",str(value or "").lower())
     return "".join(c for c in text if unicodedata.category(c)!="Mn")
 
+def is_information_delivery_obligation(value: Any) -> bool:
+    """Identify mandates whose material performance is delivery of documents or information."""
+    folded=_fold_legal_text(value)
+    actions=("informar","brindar","remitir","entregar","comunicar","trasladar", "poner en conocimiento")
+    objects=("contrato","terminos","condiciones","tarif","monto","informacion", "document")
+    return any(x in folded for x in actions) and any(x in folded for x in objects)
+
 def _legal_dates_in(value: Any) -> list[pd.Timestamp]:
     """Read dates from extracted evidence without depending on Gemini's prose."""
     raw=str(value or "").strip()
@@ -1038,6 +1045,48 @@ def enforce_service_restriction_rule(result: dict[str,Any], paragraph: str,
         cleaned.append(replacement)
     return " ".join(x for x in cleaned if x).strip()
 
+def enforce_information_delivery_language(result: dict[str,Any], paragraph: str,
+                                          documents: dict[str,str] | None=None) -> str:
+    """Keep contract/information cases free of discount rules and invented server events."""
+    ficha=result.get("ficha") if isinstance(result.get("ficha"),dict) else {}
+    obligation=str(ficha.get("obligacion_principal") or "")
+    if not is_information_delivery_obligation(obligation):
+        return paragraph
+    raw=_fold_legal_text("\n".join(str(x) for x in (documents or {}).values()))
+    checklist=result.setdefault("evaluacion_juridica",{}).setdefault("checklist",[])
+    note=("Control de entrega de información: se aplicó exclusivamente la prueba de contenido, envío, "
+          "entrega y recepción; se excluyeron reglas de periodos, descuentos, registro y activación.")
+    if note not in checklist:
+        checklist.append(note)
+    cleaned=[]
+    for sentence in re.split(r"(?<=[.!?])\s+",str(paragraph or "").strip()):
+        folded=_fold_legal_text(sentence)
+        cross_matter=(
+            any(x in folded for x in ("periodo","meses pendientes","meses restantes")) and
+            any(x in folded for x in ("registro y activacion","descuento","beneficio","nota de credito")))
+        if cross_matter:
+            continue
+        invented_server=(
+            "servidor" in folded and
+            any(x in folded for x in ("no envio","no genero","no confirmo","no remitio")) and
+            not ("servidor" in raw and any(x in raw for x in ("no envio","no genero","no confirmo","no remitio"))))
+        if invented_server:
+            cleaned.append(
+                "La ausencia de una constancia no permite atribuir al servidor una respuesta que no figura "
+                "literalmente en el expediente; únicamente permite señalar que no obra una confirmación "
+                "documental de entrega y recepción con fecha verificable.")
+            continue
+        cleaned.append(sentence)
+    text=" ".join(x for x in cleaned if x).strip()
+    # Catch the frequent contamination even when it appears inside a longer sentence.
+    text=re.sub(
+        r"(?:Al\s+)?(?:quedar|quedando|existir|existiendo)\s+(?:periodos?|meses?)\b[^.]*?"
+        r"(?:registro\s+y\s+activaci[oó]n|descuent\w*|benefici\w*|nota\s+de\s+cr[eé]dito)[^.]*\.?",
+        "",text,flags=re.I)
+    text=re.sub(r"\s+([,;:.])",r"\1",text)
+    text=re.sub(r"\s{2,}"," ",text).strip()
+    return text
+
 def derive_execution_fields(result: dict[str,Any], extraction: dict[str,Any]) -> None:
     """Summarize proven execution without changing the legal result or timeliness analysis."""
     ficha=result.setdefault("ficha",{})
@@ -1113,7 +1162,7 @@ RECONEXIÓN CONDICIONADA: si el mandato ordena reconectar solamente cuando el se
 
 INVENTARIO DE EVIDENCIA: distingue entre un medio no presentado y un medio presentado cuyo contenido no acredita el hecho o cuya fecha no es verificable. Si un archivo, índice o página identifica expresamente un "Histórico de cortes y reconexiones", "Consulta del estado del servicio" o printer equivalente, regístralo como presentado y está prohibido afirmar que la empresa "no lo remitió". Si sus datos no muestran una fecha útil, indica con precisión que fue presentado pero no permite verificar temporalmente la reconexión.
 
-REGLA OBLIGATORIA para obligaciones de informar, brindar, remitir, entregar o trasladar información al usuario (aplica en especial a devoluciones en efectivo y comunicaciones equivalentes): una carta o correo simple no acredita por sí solo que el usuario recibió la información. Exige acuse, confirmación de recepción o entrega, cargo de notificación con fecha o equivalente. Si solo existe envío sin recepción acreditada, marca el componente como no_acreditado.
+REGLA OBLIGATORIA PARA ENTREGA DE CONTRATOS O INFORMACIÓN: una carta o correo simple no acredita por sí solo la ejecución. En entrega física exige cargo de notificación al domicilio con fecha y forma de entrega. En correo electrónico verifica conjuntamente: (a) constancia de entrega efectiva al buzón de destino y (b) acuse, confirmación de recepción del usuario o elemento equivalente con fecha. La sola constancia de envío, la ausencia de rebote o el contrato adjunto no sustituyen esas pruebas. Si falta una constancia, describe únicamente cuál no obra; está prohibido afirmar que el servidor rechazó, no envió o no confirmó algo, salvo que el documento lo diga literalmente. En esta materia está prohibido usar razonamientos sobre periodos, meses, descuentos, registro o activación, salvo que esos elementos formen parte real del mandato evaluado.
 
 EXCEPCIÓN OBLIGATORIA — AJUSTES, ANULACIONES O DESCUENTOS EN LA FACTURACIÓN: cuando la obligación consiste en ajustar, anular o descontar un importe en la facturación (no en devolver dinero en efectivo), la ejecución se acredita con la captura de pantalla del sistema o el histórico del estado de cuenta que muestre que el ajuste coincide con el importe ordenado por el TRASU, conforme a los criterios de la materia "Facturación y cobro". En estos casos NO se exige acreditar que el usuario recibió una notificación o carta sobre el ajuste; dicha comunicación, si existe, es evidencia adicional pero no condición de cumplimiento. No confundas la obligación de ajustar la facturación con una obligación de informar al usuario.
 
@@ -1154,6 +1203,7 @@ MÉTODO Y CONTROLES JURÍDICOS OBLIGATORIOS (en este orden):
 16. Está prohibido afirmar que una obligación se ejecutó "dentro del plazo" si la extracción probatoria no contiene una fecha_ejecucion_acreditada igual o anterior a la fecha de vencimiento. Distingue fecha de carta, fecha de captura y fecha histórica de ejecución. Para una reconexión condicionada, un estado "activo" consultado después del vencimiento solo acredita el estado en esa fecha posterior; no acredita la inexistencia de suspensión en la fecha de notificación ni una reconexión oportuna, salvo que el propio histórico identifique esas fechas.
 17. CONTROL DE MATERIA: aplica únicamente criterios correspondientes a la obligación principal identificada. Si la obligación es reconectar, reactivar o acreditar operatividad, está prohibido fundamentar el análisis con reglas o expresiones sobre descuentos recurrentes, meses o periodos pendientes, importes, notas de crédito, registro o activación de beneficios, ofertas o promociones. Esas expresiones solo proceden cuando el mandato principal versa realmente sobre esas materias. Antes de redactar, elimina del razonamiento cualquier criterio perteneciente a una materia distinta.
 18. CONTROL DE EXISTENCIA DOCUMENTAL: no confundas ausencia de un documento con insuficiencia de su contenido. Si el expediente o la extracción probatoria identifica que se presentó un histórico, consulta, printer, acta o constancia, menciona que fue presentado. Solo concluye que no acredita el cumplimiento cuando falte en ese medio la fecha, el evento o el dato objetivo exigible. Nunca escribas "no remitió" o "no adjuntó" respecto de un medio que aparece en el inventario documental.
+19. CONTROL DE ENTREGA DE CONTRATOS O INFORMACIÓN: si el mandato consiste en entregar documentos o brindar información, analiza exclusivamente el contenido ordenado, el medio utilizado y la prueba de entrega y recepción. Para entrega física exige cargo de notificación al domicilio con fecha y forma de entrega. Para correo electrónico exige conjuntamente constancia de entrega efectiva al buzón y acuse o confirmación de recepción del usuario con fecha. Si una constancia no obra, escribe "no obra constancia"; no atribuyas al servidor una negativa, rechazo o falta de confirmación que no esté literalmente documentada. Está prohibido trasladar a estos casos frases sobre periodos, meses pendientes, descuentos, registro o activación.
 
 Devuelve JSON válido conforme al esquema y un párrafo final completo, cronológico, con obligación, pruebas por periodo, contraste, conclusión y análisis separado de subsanación."""
     user=json.dumps({"esquema":schema,"caso":{k:v for k,v in payload.items() if k!="documentos"},"extraccion_probatoria":extraction,"fuentes":sources},ensure_ascii=False)
@@ -1201,17 +1251,25 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
     # document reports it.
     incomplete=bool(statuses & {"programado","en_curso"} or matrix & {"parcial","no_acreditado"})
     if incomplete:
+        obligation_text=str(result.get("ficha",{}).get("obligacion_principal") or "")
+        information_delivery=is_information_delivery_obligation(obligation_text)
         result["resultado"]="Incumplió"
         result["subsanacion_voluntaria"]="no aplica"
         result["clasificacion"]="PAS"
-        result.setdefault("evaluacion_juridica",{}).setdefault("checklist",[]).append(
-            "Regla obligatoria: existen periodos programados, en curso o no acreditados; no hubo ejecución íntegra, cese total ni reversión integral.")
+        incomplete_note=(
+            "Regla obligatoria de entrega de información: uno o más componentes del contenido, la entrega o la "
+            "recepción no están acreditados; no hubo ejecución íntegra."
+            if information_delivery else
+            "Regla obligatoria: uno o más componentes de la obligación están programados, en curso o no "
+            "acreditados; no hubo ejecución íntegra.")
+        result.setdefault("evaluacion_juridica",{}).setdefault("checklist",[]).append(incomplete_note)
         locked={
             "ficha":result.get("ficha",{}),"extraccion_probatoria":extraction,
             "resultado_obligatorio":"Incumplió","subsanacion_obligatoria":"no aplica",
             "clasificacion_obligatoria":"PAS","fuentes_aplicables":sources,
+            "tipo_obligacion":"entrega_de_informacion" if information_delivery else "otra",
         }
-        rewrite_system="""Redacta un único párrafo jurídico conforme a la plantilla TRASU. Las conclusiones indicadas como obligatorias están bloqueadas y no puedes modificarlas. Debes indicar literalmente la fecha de notificación, el plazo de cumplimiento (número y tipo de días) y la fecha de vencimiento que aparecen en la ficha; no puedes recalcularlos ni omitirlos. No afirmes que una programación, solicitud, carta o gestión en curso acredita ejecución. Explica que, al quedar periodos sin prueba de registro y activación efectiva, no hubo ejecución íntegra, cese total ni reversión integral. No apliques el eximente por el solo hecho de que no exista restricción del servicio. Devuelve JSON {parrafo_final:string}."""
+        rewrite_system="""Redacta un único párrafo jurídico conforme a la plantilla TRASU. Las conclusiones indicadas como obligatorias están bloqueadas y no puedes modificarlas. Debes indicar literalmente la fecha de notificación, el plazo de cumplimiento (número y tipo de días) y la fecha de vencimiento que aparecen en la ficha; no puedes recalcularlos ni omitirlos. No afirmes que una programación, solicitud, carta o gestión en curso acredita ejecución. Si tipo_obligacion=entrega_de_informacion, analiza únicamente el contenido ordenado, el envío, la entrega y la recepción: la notificación física se acredita con cargo al domicilio; el correo electrónico requiere constancia de entrega al buzón y acuse o confirmación de recepción del usuario. Cuando falte una constancia escribe solo que no obra; no inventes respuestas del servidor. En esos casos está prohibido mencionar periodos, meses pendientes, descuentos, registro o activación. Para las demás obligaciones explica de forma neutral qué componente material quedó pendiente, sin importar frases de otra materia. No apliques el eximente por el solo hecho de que no exista restricción del servicio. Devuelve JSON {parrafo_final:string}."""
         rewritten=parse_json_response(gemini_text(rewrite_system,json.dumps(locked,ensure_ascii=False),json_mode=True)) or {}
         if not isinstance(rewritten,dict): rewritten={}
         result["parrafo_final"]=rewritten.get("parrafo_final",result.get("parrafo_final",""))
@@ -1248,6 +1306,8 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
     paragraph=enforce_conditional_reconnection_timeline(
         result,extraction,paragraph,sources,payload.get("documentos") if isinstance(payload.get("documentos"),dict) else {})
     paragraph=enforce_service_restriction_rule(result,paragraph,sources)
+    paragraph=enforce_information_delivery_language(
+        result,paragraph,payload.get("documentos") if isinstance(payload.get("documentos"),dict) else {})
     derive_execution_fields(result,extraction)
     result["parrafo_final"]=normalize_legal_paragraph(paragraph,result.get("ficha",{}),result.get("resultado",""))
     # Estos campos personales no son necesarios para la evaluación ni deben
@@ -1259,7 +1319,7 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
 
 def regenerate_paragraph(result: dict[str,Any]) -> str:
     context={"ficha":result.get("ficha",{}),"evaluacion_juridica":result.get("evaluacion_juridica",{}),"resultado":result.get("resultado"),"subsanacion_voluntaria":result.get("subsanacion_voluntaria"),"clasificacion":result.get("clasificacion"),"datos_pendientes":result.get("datos_pendientes",[]),"instrucciones":INSTRUCCIONES.read_text("utf-8",errors="ignore")[:40000]}
-    response=gemini_text("Regenera únicamente el párrafo jurídico final con los datos aportados. Usa todas las fechas exclusivamente en formato dd/mm/aaaa. Si es TRASU, inicia con 'La Resolución TRASU fue notificada el dd/mm/aaaa' y no incluyas el número de resolución ni sustituyas la notificación por la emisión. Respeta el campo evaluacion_juridica.restriccion_servicio: cuando sea 'No', está prohibido afirmar que el mandato restringe el servicio o que sus efectos son irreversibles por ese motivo. No inventes ni completes faltantes. Devuelve JSON {parrafo_final:string}.",json.dumps(context,ensure_ascii=False),json_mode=True)
+    response=gemini_text("Regenera únicamente el párrafo jurídico final con los datos aportados. Usa todas las fechas exclusivamente en formato dd/mm/aaaa. Si es TRASU, inicia con 'La Resolución TRASU fue notificada el dd/mm/aaaa' y no incluyas el número de resolución ni sustituyas la notificación por la emisión. Respeta el campo evaluacion_juridica.restriccion_servicio: cuando sea 'No', está prohibido afirmar que el mandato restringe el servicio o que sus efectos son irreversibles por ese motivo. Si la obligación es entregar contratos o información, analiza solo el contenido, la entrega y la recepción; no inventes respuestas del servidor ni uses frases sobre periodos, descuentos, registro o activación. No inventes ni completes faltantes. Devuelve JSON {parrafo_final:string}.",json.dumps(context,ensure_ascii=False),json_mode=True)
     paragraph=parse_json_response(response)["parrafo_final"]
     return normalize_legal_paragraph(paragraph,result.get("ficha",{}),result.get("resultado",""))
 
