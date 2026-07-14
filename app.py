@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-28"
+APP_VERSION = "2026.07.13-29"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -795,7 +795,8 @@ def normalize_legal_paragraph(paragraph: str, ficha: dict[str,Any], resultado: s
     return text
 
 def enforce_conditional_reconnection_timeline(result: dict[str,Any], extraction: dict[str,Any],
-                                              paragraph: str, sources: dict[str,str]) -> str:
+                                              paragraph: str, sources: dict[str,str],
+                                              documents: dict[str,str] | None=None) -> str:
     """Reject the inference that a later active state proves the earlier condition or timely execution."""
     ficha=result.get("ficha") if isinstance(result.get("ficha"),dict) else {}
     obligation=_fold_legal_text(ficha.get("obligacion_principal"))
@@ -856,6 +857,20 @@ def enforce_conditional_reconnection_timeline(result: dict[str,Any], extraction:
             later_date=pd.to_datetime(later_text,dayfirst=True,errors="coerce")
             if source_text and pd.notna(later_date) and pd.Timestamp(later_date).normalize()>due:
                 late_state_dates.append(pd.Timestamp(later_date).normalize())
+    # Gemini can omit an attached printer from its JSON even though it is
+    # expressly inventoried in the source documents. The deterministic guard
+    # therefore checks the actual extracted case text as well. This does not
+    # invent a date: it only confirms that system evidence was in fact supplied.
+    raw_documents="\n".join(str(value or "") for value in (documents or {}).values())
+    raw_folded=_fold_legal_text(raw_documents)
+    raw_has_printer=any(term in raw_folded for term in (
+        "printer","captura del sistema","consulta del sistema","historico del sistema",
+        "historico de estado","estado de cuenta financiera","recibos ajustados"))
+    raw_reports_active=("servicio" in raw_folded and
+                        any(term in raw_folded for term in ("activo","operativo","sin suspension vigente",
+                                                            "no registrando suspension vigente")))
+    if raw_has_printer and raw_reports_active:
+        has_system_printer=True
     if timely_objective_proof:
         if timely_proof_state=="condicion_no_configurada":
             ficha["estado_ejecucion"]="No aplica"
@@ -1143,7 +1158,8 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
     half=len(paragraph)//2
     if len(paragraph)%2==0 and paragraph[:half]==paragraph[half:]:
         paragraph=paragraph[:half].strip()
-    paragraph=enforce_conditional_reconnection_timeline(result,extraction,paragraph,sources)
+    paragraph=enforce_conditional_reconnection_timeline(
+        result,extraction,paragraph,sources,payload.get("documentos") if isinstance(payload.get("documentos"),dict) else {})
     derive_execution_fields(result,extraction)
     result["parrafo_final"]=normalize_legal_paragraph(paragraph,result.get("ficha",{}),result.get("resultado",""))
     # Estos campos personales no son necesarios para la evaluación ni deben
