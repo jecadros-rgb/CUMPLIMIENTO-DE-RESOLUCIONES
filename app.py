@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = "2026.07.13-24"
+APP_VERSION = "2026.07.13-25"
 FUENTES = BASE / "fuentes_permanentes"
 INSTRUCCIONES = BASE / "instrucciones" / "instrucciones_juridicas.txt"
 CRITERIOS_INSTRUCCION = BASE / "instrucciones" / "criterios_evaluacion_obligatorios.txt"
@@ -428,7 +428,8 @@ Devuelve JSON válido conforme al esquema."""
         raise ValueError("No se pudo identificar el plazo vinculado a la obligación principal en HA RESUELTO")
     return data
 
-def exact_notification(expediente: str) -> str | None:
+def exact_case_record(expediente: str) -> dict[str,str] | None:
+    """Return institutional data from the exact notification row, never from a fuzzy match."""
     path=FUENTES/"notificaciones mayo.xlsx"
     for _,df in pd.read_excel(path,sheet_name=None,dtype=str).items():
         cols={str(c).strip().upper():c for c in df.columns}
@@ -437,12 +438,18 @@ def exact_notification(expediente: str) -> str | None:
             values=df[cols["NRO_EXPEDIENTE"]].fillna("").astype(str).str.strip()
             target=re.sub(r"[^A-Z0-9]","",expediente.upper())
             normalized=values.str.upper().str.replace(r"[^A-Z0-9]","",regex=True)
-            hit=df.loc[normalized==target,cols[date_key]]
-            if not hit.empty and pd.notna(hit.iloc[0]):
-                raw=str(hit.iloc[0]).strip()
+            hit=df.loc[normalized==target]
+            if not hit.empty and pd.notna(hit.iloc[0][cols[date_key]]):
+                row=hit.iloc[0]
+                raw=str(row[cols[date_key]]).strip()
                 # The source column stores a full timestamp (00:00:00); keep only the date.
                 parsed=pd.to_datetime(raw,errors="coerce")
-                return parsed.strftime("%d/%m/%Y") if pd.notna(parsed) else raw
+                notification=parsed.strftime("%d/%m/%Y") if pd.notna(parsed) else raw
+                operator=""
+                if "EMPRESA" in cols and pd.notna(row[cols["EMPRESA"]]):
+                    operator=re.sub(r"\s+"," ",str(row[cols["EMPRESA"]]).strip())
+                    if operator.lower() in {"nan","none","no identificado"}: operator=""
+                return {"fecha_notificacion":notification,"empresa_operadora":operator}
     return None
 
 def identify_exact_expediente(context: str) -> str | None:
@@ -967,6 +974,9 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
     result["ficha"]["fecha_notificacion_emision"]=payload.get("fecha_verificada","No identificado")
     result["ficha"]["plazo_cumplimiento"]=payload.get("plazo_verificado","Pendiente de verificación")
     result["ficha"]["fecha_vencimiento"]=payload.get("fecha_vencimiento","Pendiente de verificación")
+    verified_operator=str(payload.get("empresa_operadora_verificada") or "").strip()
+    if verified_operator:
+        result["ficha"]["empresa_operadora"]=verified_operator
     verified_principal=payload.get("obligacion_y_plazo_principales_verificados") or {}
     resolutive_obligation=extraction.get("obligacion_extraida_parte_resolutiva") or {}
     if isinstance(verified_principal,dict) and str(verified_principal.get("obligacion_principal","")).strip():
@@ -1125,9 +1135,11 @@ if analyze:
                 principal_data=extract_trasu_mandate_and_term(resolutive) if resolutive else {}
                 searchable="\n".join(u.name for u in uploads)+"\n"+combined
                 expediente=parse_trasu_name(searchable) or identify_exact_expediente(searchable) or "No identificado"
-                notice=None; due=None; term=None
+                notice=None; due=None; term=None; operator=None
                 if tipo=="Resolución TRASU":
-                    notice=exact_notification(expediente) if expediente!="No identificado" else None
+                    case_record=exact_case_record(expediente) if expediente!="No identificado" else None
+                    notice=(case_record or {}).get("fecha_notificacion")
+                    operator=(case_record or {}).get("empresa_operadora")
                     if not notice:
                         st.session_state.analysis_error="No se encontró coincidencia exacta del expediente en notificaciones mayo.xlsx. Expediente detectado: "+expediente
                     else:
@@ -1136,7 +1148,7 @@ if analyze:
                         if not deadline: st.session_state.analysis_error="No se pudo determinar el plazo o calcular el vencimiento con CONTADOR DE PLAZOS - TRASU 2026.xlsx"
                 if tipo!="Resolución TRASU" or (notice and due):
                     st.session_state.analysis_status="Aplicando instrucciones, criterios, pautas y plantillas"
-                    payload={"tipo_acto":tipo,"expediente_detectado":expediente,"fecha_verificada":notice or "No identificado","plazo_verificado":term or "Pendiente de verificación","fecha_vencimiento":due or "Pendiente de verificación","parte_resolutiva_trasu":resolutive or "No corresponde","obligacion_y_plazo_principales_verificados":principal_data,"documentos":texts}
+                    payload={"tipo_acto":tipo,"expediente_detectado":expediente,"empresa_operadora_verificada":operator or "","fecha_verificada":notice or "No identificado","plazo_verificado":term or "Pendiente de verificación","fecha_vencimiento":due or "Pendiente de verificación","parte_resolutiva_trasu":resolutive or "No corresponde","obligacion_y_plazo_principales_verificados":principal_data,"documentos":texts}
                     st.session_state.result=ai_evaluate(payload); st.session_state.texts=texts
                     st.session_state.analysis_status="Evaluación completada"
             except Exception as e:
