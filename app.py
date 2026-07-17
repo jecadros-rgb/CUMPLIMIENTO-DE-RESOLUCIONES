@@ -1177,12 +1177,15 @@ def enforce_evidence_citation(extraction: dict[str,Any], paragraph: str) -> str:
         return (paragraph[:match.start()].rstrip()+" "+addition+" "+paragraph[match.start():]).strip()
     return (paragraph+" "+addition).strip()
 
-def normalize_verdict_fields(result: dict[str,Any], extraction: dict[str,Any]) -> None:
+def normalize_verdict_fields(result: dict[str,Any], extraction: dict[str,Any],
+                             sources: dict[str,str] | None=None) -> None:
     """The dictamen uses a closed vocabulary: resultado ∈ {Cumplió, Incumplió,
     Inejecutable}, subsanación ∈ {aplica, no aplica, no corresponde} and
     clasificación ∈ {PAS, NO PAS}. 'Pendiente' must never reach the UI, so any
-    empty or off-vocabulary value is normalized here, deriving the verdict from
-    the compliance matrix and the evidence states when the model omitted it."""
+    empty or off-vocabulary value is normalized here. A missing subsanación is
+    never assumed from the resultado alone: it is taken from the drafted
+    paragraph or, failing that, evaluated against the selected criterios and
+    pautas, because each materia has its own subsanación supuestos."""
     folded=_fold_legal_text(result.get("resultado"))
     if "incumpl" in folded: resultado="Incumplió"
     elif "inejecut" in folded: resultado="Inejecutable"
@@ -1206,7 +1209,56 @@ def normalize_verdict_fields(result: dict[str,Any], extraction: dict[str,Any]) -
     if "no aplica" in subs: subs_value="no aplica"
     elif "no corresponde" in subs: subs_value="no corresponde"
     elif "aplica" in subs: subs_value="aplica"
-    else: subs_value="no aplica" if resultado=="Incumplió" else "no corresponde"
+    else:
+        subs_value=""
+        # 1) El párrafo redactado ya contiene la conclusión de subsanación.
+        paragraph=_fold_legal_text(result.get("parrafo_final"))
+        if "no corresponde evaluar subsanacion" in paragraph: subs_value="no corresponde"
+        elif re.search(r"no\s+(resulta|es)\s+aplicable\s+el\s+eximente",paragraph): subs_value="no aplica"
+        elif re.search(r"(resulta|es)\s+aplicable\s+el\s+eximente",paragraph): subs_value="aplica"
+        if not subs_value and resultado!="Incumplió":
+            # Solo se evalúa subsanación cuando hubo incumplimiento.
+            subs_value="no corresponde"
+        if not subs_value:
+            # 2) Componentes pendientes: por regla transversal no existe cese
+            # total ni reversión integral, requisito conjunto del eximente.
+            evidence={_fold_legal_text(x.get("estado")) for x in (extraction.get("medios_probatorios") or []) if isinstance(x,dict)}
+            matrix={_fold_legal_text(x.get("estado")) for x in (extraction.get("matriz_cumplimiento") or []) if isinstance(x,dict)}
+            if evidence & {"programado","en_curso","no_acreditado"} or matrix & {"parcial","no_acreditado"}:
+                subs_value="no aplica"
+        if not subs_value:
+            # 3) Evaluación específica con los criterios y pautas de la materia:
+            # cada materia tiene sus propios supuestos de subsanación y no puede
+            # asumirse un valor a partir del solo resultado.
+            try:
+                subs_context={"ficha":result.get("ficha",{}),"extraccion_probatoria":extraction,
+                              "resultado":resultado,
+                              "criterios":(sources or {}).get("criterios_evaluacion_aplicables",""),
+                              "pautas":(sources or {}).get("pautas_pas_aplicables",""),
+                              "restriccion_servicio":(sources or {}).get("restriccion_servicio",""),
+                              "sustento_restriccion_servicio":(sources or {}).get("sustento_restriccion_servicio","")}
+                subs_raw=parse_json_response(gemini_text(
+                    "Evalúa únicamente si aplica el eximente de subsanación voluntaria, siguiendo los supuestos de "
+                    "los criterios y pautas entregados para la materia. El eximente exige conjuntamente cese total, "
+                    "reversión integral y oportunidad anterior al inicio del PAS. Si restriccion_servicio=SI, el "
+                    "eximente no procede por la irreversibilidad de la falta de servicio. Devuelve JSON "
+                    "{subsanacion_voluntaria:'aplica'|'no aplica','sustento':string}.",
+                    json.dumps(subs_context,ensure_ascii=False),json_mode=True))
+                candidate=_fold_legal_text((subs_raw or {}).get("subsanacion_voluntaria") if isinstance(subs_raw,dict) else "")
+                if "no aplica" in candidate: subs_value="no aplica"
+                elif "aplica" in candidate: subs_value="aplica"
+                if subs_value and isinstance(subs_raw,dict) and str(subs_raw.get("sustento","")).strip():
+                    result.setdefault("evaluacion_juridica",{}).setdefault("checklist",[]).append(
+                        f"Subsanación voluntaria (evaluación específica): {subs_raw['sustento']}")
+            except Exception:
+                pass
+        if not subs_value:
+            # Último recurso trazable: sin prueba de cese total y reversión
+            # integral acreditados, el eximente no puede tenerse por configurado.
+            subs_value="no aplica"
+            result.setdefault("evaluacion_juridica",{}).setdefault("checklist",[]).append(
+                "Subsanación voluntaria: el modelo no la determinó y no obra en la evaluación prueba de cese total "
+                "y reversión integral anteriores al PAS; se registra 'no aplica' por falta de acreditación.")
     result["subsanacion_voluntaria"]=subs_value
     clas=_fold_legal_text(result.get("clasificacion"))
     if "no pas" in clas: clas_value="NO PAS"
@@ -1407,7 +1459,7 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
         if not isinstance(rewritten,dict): rewritten={}
         result["parrafo_final"]=rewritten.get("parrafo_final",result.get("parrafo_final",""))
     # El dictamen nunca puede quedar vacío ni fuera del vocabulario cerrado.
-    normalize_verdict_fields(result,extraction)
+    normalize_verdict_fields(result,extraction,sources)
     # A response without a paragraph is never a completed evaluation.
     if not str(result.get("parrafo_final","")).strip():
         locked={"ficha":result.get("ficha",{}),"extraccion_probatoria":extraction,
