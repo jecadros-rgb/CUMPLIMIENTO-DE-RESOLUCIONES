@@ -673,7 +673,8 @@ def classify_service_restriction(obligation: str, matter: str) -> tuple[bool,str
         "traslado del servicio","retornar el numero","devolver el numero",
         "portabilidad no autorizada","suspension injustificada",
         "baja injustificada")
-    if any(term in text for term in information_terms) and not any(term in text for term in restoration_terms):
+    if ((any(term in text for term in information_terms) or is_information_delivery_obligation(obligation))
+            and not any(term in text for term in restoration_terms)):
         return False, ("La obligación consiste en entregar o comunicar información contractual; "
                        "no restablece ni habilita materialmente el acceso al servicio.")
 
@@ -1009,11 +1010,46 @@ def enforce_conditional_reconnection_timeline(result: dict[str,Any], extraction:
             "configurado la infracción. Asimismo, no resulta aplicable el eximente de subsanación voluntaria, debido a "
             "que no se acreditó el cese total de la conducta ni la reversión integral de sus efectos.")
 
+def evaluate_subsanacion_especifica(result: dict[str,Any], extraction: dict[str,Any],
+                                    sources: dict[str,str] | None) -> tuple[str,str]:
+    """Decide subsanación with the selected materia rules only; ('','') when unavailable."""
+    try:
+        subs_context={"ficha":result.get("ficha",{}),"extraccion_probatoria":extraction,
+                      "resultado":result.get("resultado"),
+                      "criterios":(sources or {}).get("criterios_evaluacion_aplicables",""),
+                      "pautas":(sources or {}).get("pautas_pas_aplicables",""),
+                      "restriccion_servicio":(sources or {}).get("restriccion_servicio",""),
+                      "sustento_restriccion_servicio":(sources or {}).get("sustento_restriccion_servicio","")}
+        raw=parse_json_response(gemini_text(
+            "Evalúa únicamente si aplica el eximente de subsanación voluntaria, siguiendo los supuestos de "
+            "los criterios y pautas entregados para la materia. El eximente exige conjuntamente cese total, "
+            "reversión integral y oportunidad anterior al inicio del PAS. Si restriccion_servicio=SI, el "
+            "eximente no procede por la irreversibilidad de la falta de servicio; si es NO, está prohibido "
+            "negarlo por efectos irreversibles de una restricción y deben evaluarse separadamente el cese "
+            "total, la reversión integral y su oportunidad. Devuelve JSON "
+            "{subsanacion_voluntaria:'aplica'|'no aplica','sustento':string}.",
+            json.dumps(subs_context,ensure_ascii=False),json_mode=True))
+        candidate=_fold_legal_text((raw or {}).get("subsanacion_voluntaria") if isinstance(raw,dict) else "")
+        sustento=str(raw.get("sustento","")).strip() if isinstance(raw,dict) else ""
+        if "no aplica" in candidate: return "no aplica",sustento
+        if "aplica" in candidate: return "aplica",sustento
+    except Exception:
+        pass
+    return "",""
+
 def enforce_service_restriction_rule(result: dict[str,Any], paragraph: str,
-                                     sources: dict[str,str]) -> str:
+                                     sources: dict[str,str],
+                                     extraction: dict[str,Any] | None=None) -> str:
     """Prevent a lack-of-service PAS rule from contaminating other matters."""
     restricted=str(sources.get("restriccion_servicio") or "NO").upper()=="SI"
     reason=str(sources.get("sustento_restriccion_servicio") or "").strip()
+    # Regla transversal (fila 83): entregar contratos o información nunca es
+    # una restricción del servicio, sin importar cómo se haya clasificado antes.
+    obligation=str((result.get("ficha") or {}).get("obligacion_principal") or "")
+    if restricted and is_information_delivery_obligation(obligation):
+        restricted=False
+        reason=("Corrección transversal: la obligación consiste en entregar o comunicar información "
+                "contractual; no restablece ni habilita materialmente el acceso al servicio.")
     evaluation=result.setdefault("evaluacion_juridica",{})
     evaluation["restriccion_servicio"]="Sí" if restricted else "No"
     checklist=evaluation.setdefault("checklist",[])
@@ -1022,6 +1058,25 @@ def enforce_service_restriction_rule(result: dict[str,Any], paragraph: str,
         checklist.append(note)
     if restricted:
         return paragraph
+
+    sentences=re.split(r"(?<=[.!?])\s+",str(paragraph or "").strip())
+    def _is_false_restriction(sentence: str) -> bool:
+        folded=_fold_legal_text(sentence)
+        return ("restriccion del servicio" in folded and
+                any(term in folded for term in ("no pueden ser revertidos","no puede ser revertido",
+                                                "efectos no pueden","no resulta aplicable")))
+    # Si la única razón para negar la subsanación fue la restricción falsa, la
+    # conclusión quedó sin fundamento: reevaluarla con las reglas de la materia.
+    if (any(_is_false_restriction(s) for s in sentences) and
+            _fold_legal_text(result.get("subsanacion_voluntaria"))=="no aplica" and
+            "incumpl" in _fold_legal_text(result.get("resultado"))):
+        value,sustento=evaluate_subsanacion_especifica(result,extraction or {},sources)
+        if value:
+            result["subsanacion_voluntaria"]=value
+            result["clasificacion"]="NO PAS" if value=="aplica" else "PAS"
+            if sustento:
+                result.setdefault("evaluacion_juridica",{}).setdefault("checklist",[]).append(
+                    "Subsanación voluntaria reevaluada al descartarse la restricción del servicio: "+sustento)
 
     subs=_fold_legal_text(result.get("subsanacion_voluntaria"))
     if subs=="aplica":
@@ -1033,15 +1088,10 @@ def enforce_service_restriction_rule(result: dict[str,Any], paragraph: str,
         replacement=("Asimismo, no resulta aplicable el eximente de subsanación voluntaria, debido a que no se "
                      "acreditaron conjuntamente el cese total, la reversión integral y su oportunidad anterior al "
                      "inicio del PAS.")
-    sentences=re.split(r"(?<=[.!?])\s+",str(paragraph or "").strip())
     cleaned=[]
     replaced=False
     for sentence in sentences:
-        folded=_fold_legal_text(sentence)
-        false_restriction=("restriccion del servicio" in folded and
-                           any(term in folded for term in ("no pueden ser revertidos","no puede ser revertido",
-                                                           "efectos no pueden","no resulta aplicable")))
-        if false_restriction:
+        if _is_false_restriction(sentence):
             if not replaced:
                 cleaned.append(replacement); replaced=True
             continue
@@ -1230,28 +1280,10 @@ def normalize_verdict_fields(result: dict[str,Any], extraction: dict[str,Any],
             # 3) Evaluación específica con los criterios y pautas de la materia:
             # cada materia tiene sus propios supuestos de subsanación y no puede
             # asumirse un valor a partir del solo resultado.
-            try:
-                subs_context={"ficha":result.get("ficha",{}),"extraccion_probatoria":extraction,
-                              "resultado":resultado,
-                              "criterios":(sources or {}).get("criterios_evaluacion_aplicables",""),
-                              "pautas":(sources or {}).get("pautas_pas_aplicables",""),
-                              "restriccion_servicio":(sources or {}).get("restriccion_servicio",""),
-                              "sustento_restriccion_servicio":(sources or {}).get("sustento_restriccion_servicio","")}
-                subs_raw=parse_json_response(gemini_text(
-                    "Evalúa únicamente si aplica el eximente de subsanación voluntaria, siguiendo los supuestos de "
-                    "los criterios y pautas entregados para la materia. El eximente exige conjuntamente cese total, "
-                    "reversión integral y oportunidad anterior al inicio del PAS. Si restriccion_servicio=SI, el "
-                    "eximente no procede por la irreversibilidad de la falta de servicio. Devuelve JSON "
-                    "{subsanacion_voluntaria:'aplica'|'no aplica','sustento':string}.",
-                    json.dumps(subs_context,ensure_ascii=False),json_mode=True))
-                candidate=_fold_legal_text((subs_raw or {}).get("subsanacion_voluntaria") if isinstance(subs_raw,dict) else "")
-                if "no aplica" in candidate: subs_value="no aplica"
-                elif "aplica" in candidate: subs_value="aplica"
-                if subs_value and isinstance(subs_raw,dict) and str(subs_raw.get("sustento","")).strip():
-                    result.setdefault("evaluacion_juridica",{}).setdefault("checklist",[]).append(
-                        f"Subsanación voluntaria (evaluación específica): {subs_raw['sustento']}")
-            except Exception:
-                pass
+            subs_value,sustento=evaluate_subsanacion_especifica(result,extraction,sources)
+            if subs_value and sustento:
+                result.setdefault("evaluacion_juridica",{}).setdefault("checklist",[]).append(
+                    f"Subsanación voluntaria (evaluación específica): {sustento}")
         if not subs_value:
             # Último recurso trazable: sin prueba de cese total y reversión
             # integral acreditados, el eximente no puede tenerse por configurado.
@@ -1492,7 +1524,7 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
         paragraph=paragraph[:half].strip()
     paragraph=enforce_conditional_reconnection_timeline(
         result,extraction,paragraph,sources,payload.get("documentos") if isinstance(payload.get("documentos"),dict) else {})
-    paragraph=enforce_service_restriction_rule(result,paragraph,sources)
+    paragraph=enforce_service_restriction_rule(result,paragraph,sources,extraction)
     paragraph=enforce_information_delivery_language(
         result,paragraph,payload.get("documentos") if isinstance(payload.get("documentos"),dict) else {})
     paragraph=enforce_evidence_citation(extraction,paragraph)
@@ -1509,6 +1541,13 @@ def regenerate_paragraph(result: dict[str,Any]) -> str:
     context={"ficha":result.get("ficha",{}),"evaluacion_juridica":result.get("evaluacion_juridica",{}),"resultado":result.get("resultado"),"subsanacion_voluntaria":result.get("subsanacion_voluntaria"),"clasificacion":result.get("clasificacion"),"datos_pendientes":result.get("datos_pendientes",[]),"instrucciones":INSTRUCCIONES.read_text("utf-8",errors="ignore")[:40000]}
     response=gemini_text("Regenera únicamente el párrafo jurídico final con los datos aportados. Usa todas las fechas exclusivamente en formato dd/mm/aaaa. Si es TRASU, inicia con 'La Resolución TRASU fue notificada el dd/mm/aaaa' y no incluyas el número de resolución ni sustituyas la notificación por la emisión. Respeta el campo evaluacion_juridica.restriccion_servicio: cuando sea 'No', está prohibido afirmar que el mandato restringe el servicio o que sus efectos son irreversibles por ese motivo. Si la obligación es entregar contratos o información por correo, exige constancia de envío y, como prueba alternativa de llegada, constancia de entrega al destinatario o constancia de recepción del usuario; no exijas ambas ni confirmación de lectura o respuesta. Usa la fecha acreditada de entrega o recepción para determinar si la ejecución fue oportuna o tardía. No inventes respuestas del servidor ni uses frases sobre periodos, descuentos, registro o activación. No inventes ni completes faltantes. Devuelve JSON {parrafo_final:string}.",json.dumps(context,ensure_ascii=False),json_mode=True)
     paragraph=parse_json_response(response)["parrafo_final"]
+    # El párrafo regenerado también debe respetar la regla de restricción del
+    # servicio; antes este camino omitía el control y podía reintroducir una
+    # restricción falsa en materias informativas.
+    stored=_fold_legal_text(result.get("evaluacion_juridica",{}).get("restriccion_servicio"))
+    pseudo_sources={"restriccion_servicio":"SI" if stored.startswith("si") else "NO",
+                    "sustento_restriccion_servicio":""}
+    paragraph=enforce_service_restriction_rule(result,paragraph,pseudo_sources)
     return normalize_legal_paragraph(paragraph,result.get("ficha",{}),result.get("resultado",""))
 
 def to_row(result: dict, documents: list[str]) -> dict:
