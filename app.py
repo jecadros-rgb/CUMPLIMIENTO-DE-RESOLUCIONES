@@ -1141,6 +1141,37 @@ def enforce_information_delivery_language(result: dict[str,Any], paragraph: str,
     text=re.sub(r"\s{2,}"," ",text).strip()
     return text
 
+def enforce_evidence_citation(extraction: dict[str,Any], paragraph: str) -> str:
+    """The model does not reliably follow the instruction to cite each evidence
+    document by name and date (temperature is not zero, so compliance varies
+    run to run). Guarantee it deterministically instead of relying on the
+    prompt alone: append any objective evidence document the model omitted."""
+    items=[x for x in (extraction.get("medios_probatorios") or []) if isinstance(x,dict)]
+    paragraph=str(paragraph or "").strip()
+    if not paragraph or not items:
+        return paragraph
+    folded_paragraph=_fold_legal_text(paragraph)
+    missing=[]; seen=set()
+    for item in items:
+        doc=str(item.get("documento") or "").strip()
+        date=str(item.get("fecha_ejecucion_acreditada") or item.get("fecha_documento") or "").strip()
+        if not doc or not date:
+            continue
+        key=(doc.lower(),date)
+        if key in seen:
+            continue
+        seen.add(key)
+        if _fold_legal_text(doc) in folded_paragraph and date in paragraph:
+            continue
+        missing.append(f"{doc} de fecha {date}")
+    if not missing:
+        return paragraph
+    addition="Al respecto, obran en el expediente los siguientes medios probatorios: "+"; ".join(missing)+"."
+    match=re.search(r"\bEn\s+consecuencia\b",paragraph)
+    if match:
+        return (paragraph[:match.start()].rstrip()+" "+addition+" "+paragraph[match.start():]).strip()
+    return (paragraph+" "+addition).strip()
+
 def derive_execution_fields(result: dict[str,Any], extraction: dict[str,Any]) -> None:
     """Summarize proven execution without changing the legal result or timeliness analysis."""
     ficha=result.setdefault("ficha",{})
@@ -1366,6 +1397,7 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
     paragraph=enforce_service_restriction_rule(result,paragraph,sources)
     paragraph=enforce_information_delivery_language(
         result,paragraph,payload.get("documentos") if isinstance(payload.get("documentos"),dict) else {})
+    paragraph=enforce_evidence_citation(extraction,paragraph)
     derive_execution_fields(result,extraction)
     result["parrafo_final"]=normalize_legal_paragraph(paragraph,result.get("ficha",{}),result.get("resultado",""))
     # Estos campos personales no son necesarios para la evaluación ni deben
