@@ -1177,6 +1177,43 @@ def enforce_evidence_citation(extraction: dict[str,Any], paragraph: str) -> str:
         return (paragraph[:match.start()].rstrip()+" "+addition+" "+paragraph[match.start():]).strip()
     return (paragraph+" "+addition).strip()
 
+def normalize_verdict_fields(result: dict[str,Any], extraction: dict[str,Any]) -> None:
+    """The dictamen uses a closed vocabulary: resultado ∈ {Cumplió, Incumplió,
+    Inejecutable}, subsanación ∈ {aplica, no aplica, no corresponde} and
+    clasificación ∈ {PAS, NO PAS}. 'Pendiente' must never reach the UI, so any
+    empty or off-vocabulary value is normalized here, deriving the verdict from
+    the compliance matrix and the evidence states when the model omitted it."""
+    folded=_fold_legal_text(result.get("resultado"))
+    if "incumpl" in folded: resultado="Incumplió"
+    elif "inejecut" in folded: resultado="Inejecutable"
+    elif "cumpl" in folded: resultado="Cumplió"
+    else:
+        evidence={_fold_legal_text(x.get("estado")) for x in (extraction.get("medios_probatorios") or []) if isinstance(x,dict)}
+        matrix={_fold_legal_text(x.get("estado")) for x in (extraction.get("matriz_cumplimiento") or []) if isinstance(x,dict)}
+        paragraph=_fold_legal_text(result.get("parrafo_final"))
+        if (evidence & {"programado","en_curso","no_acreditado"} or matrix & {"parcial","no_acreditado"}
+                or "configurado la infraccion" in paragraph or "incumpl" in paragraph):
+            resultado="Incumplió"
+        elif "inejecutable" in paragraph:
+            resultado="Inejecutable"
+        elif matrix and matrix<={"acreditado"}:
+            resultado="Cumplió"
+        else:
+            # Sin matriz ni estados: la evaluación no acreditó la ejecución íntegra.
+            resultado="Incumplió"
+    result["resultado"]=resultado
+    subs=_fold_legal_text(result.get("subsanacion_voluntaria"))
+    if "no aplica" in subs: subs_value="no aplica"
+    elif "no corresponde" in subs: subs_value="no corresponde"
+    elif "aplica" in subs: subs_value="aplica"
+    else: subs_value="no aplica" if resultado=="Incumplió" else "no corresponde"
+    result["subsanacion_voluntaria"]=subs_value
+    clas=_fold_legal_text(result.get("clasificacion"))
+    if "no pas" in clas: clas_value="NO PAS"
+    elif "pas" in clas: clas_value="PAS"
+    else: clas_value="PAS" if resultado=="Incumplió" and subs_value!="aplica" else "NO PAS"
+    result["clasificacion"]=clas_value
+
 def derive_execution_fields(result: dict[str,Any], extraction: dict[str,Any]) -> None:
     """Summarize proven execution without changing the legal result or timeliness analysis."""
     ficha=result.setdefault("ficha",{})
@@ -1369,6 +1406,8 @@ Devuelve JSON válido conforme al esquema y un párrafo final completo, cronoló
         rewritten=parse_json_response(gemini_text(rewrite_system,json.dumps(locked,ensure_ascii=False),json_mode=True)) or {}
         if not isinstance(rewritten,dict): rewritten={}
         result["parrafo_final"]=rewritten.get("parrafo_final",result.get("parrafo_final",""))
+    # El dictamen nunca puede quedar vacío ni fuera del vocabulario cerrado.
+    normalize_verdict_fields(result,extraction)
     # A response without a paragraph is never a completed evaluation.
     if not str(result.get("parrafo_final","")).strip():
         locked={"ficha":result.get("ficha",{}),"extraccion_probatoria":extraction,
