@@ -160,25 +160,35 @@ def safe_name(name: str) -> str:
     return re.sub(r"[^\w.() -]", "_", Path(name).name, flags=re.UNICODE)[:180]
 
 def extract_archives(folder: Path) -> list[Path]:
+    """Extract every archive found under folder, including archives nested
+    inside other archives (the operator's evidence usually arrives as ZIP/RAR
+    files packed inside a master ZIP). A single top-level pass silently lost
+    that nested evidence, so iterate until no unprocessed archive remains."""
     out=[]
-    for f in list(folder.iterdir()):
-        try:
-            target=folder/(f.stem+"_extraido"); target.mkdir(exist_ok=True)
-            if f.suffix.lower()==".zip":
-                with zipfile.ZipFile(f) as z:
-                    for m in z.infolist():
-                        dest=(target/m.filename).resolve()
-                        if target.resolve() not in dest.parents and dest != target.resolve(): continue
-                        z.extract(m,target)
-            elif f.suffix.lower()==".7z":
-                import py7zr
-                with py7zr.SevenZipFile(f) as z: z.extractall(target)
-            elif f.suffix.lower()==".rar":
-                import rarfile
-                with rarfile.RarFile(f) as z: z.extractall(target)
-            else: continue
-            out += [p for p in target.rglob("*") if p.is_file()]
-        except Exception as e: st.warning(f"No se pudo descomprimir {f.name}: {e}")
+    processed=set()
+    archive_suffixes={".zip",".7z",".rar"}
+    for _ in range(6):  # límite de anidamiento para evitar bucles con archivos maliciosos
+        archives=[p for p in folder.rglob("*")
+                  if p.is_file() and p.suffix.lower() in archive_suffixes and p not in processed]
+        if not archives: break
+        for f in archives:
+            processed.add(f)
+            try:
+                target=f.parent/(f.stem+"_extraido"); target.mkdir(exist_ok=True)
+                if f.suffix.lower()==".zip":
+                    with zipfile.ZipFile(f) as z:
+                        for m in z.infolist():
+                            dest=(target/m.filename).resolve()
+                            if target.resolve() not in dest.parents and dest != target.resolve(): continue
+                            z.extract(m,target)
+                elif f.suffix.lower()==".7z":
+                    import py7zr
+                    with py7zr.SevenZipFile(f) as z: z.extractall(target)
+                elif f.suffix.lower()==".rar":
+                    import rarfile
+                    with rarfile.RarFile(f) as z: z.extractall(target)
+                out += [p for p in target.rglob("*") if p.is_file() and p.suffix.lower() not in archive_suffixes]
+            except Exception as e: st.warning(f"No se pudo descomprimir {f.name}: {e}")
     return out
 
 def read_file(path: Path) -> str:
